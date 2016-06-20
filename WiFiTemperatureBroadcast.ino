@@ -32,6 +32,7 @@
  *    SSID & password, poll/broadcast rates etc. and store in EEPROM
  *  - test on other boards
  *  - simplify the code, maybe separate out although it is handy having it all in a single file
+ *  - add a tilt switch to mean that the temperature readings are taken when the probe is actually in the bean mass, then broadcast afterwards
  * 
  * Some links:
  *  - Roasthacker: http://roasthacker.com/?p=529 & http://roasthacker.com/?p=552
@@ -158,7 +159,7 @@ void setup() {
     delay(50);
   }
 
-  Serial.print(F("In setup, "));
+  Serial.println(); Serial.print(F("In setup, "));
   #ifdef DEBUG
     #ifdef VERBOSE
       Serial.println(F("verbose debugging is enabled"));
@@ -220,7 +221,7 @@ void loop() {
   #if defined(DEBUG) && defined(VERBOSE)
     Serial.print(F("shouldReadProbes is "));
     Serial.print(shouldReadProbes);
-    Serial.print(F(") and shouldBroadcast is "));
+    Serial.print(F(" and shouldBroadcast is "));
     Serial.println(shouldBroadcast);
   #endif
 
@@ -380,7 +381,7 @@ void broadcastReadings() {
         #ifdef ERROR_LED
           flashLED(ERROR_LED, 3);
         #endif
-      #ifdef DEBUG
+      #ifdef STATUS_LED // oops, this was set to DEBUG, what a muppet...
       } else {
         flashLED(STATUS_LED, 1);
       #endif
@@ -428,15 +429,23 @@ String formatBroadcastMessage(double broadcastTemperatureC, double broadcastTemp
   // could have used a JSON library but this is so fixed it really didn't seem worth the effort
   String debugBroadcast = "";
   #ifdef DEBUG
+    byte macAddress[6];
+    WiFi.macAddress(macAddress);
+    String macAddressString;
+    for (int i = 0; i < 6; i++) {
+      macAddressString += String(macAddress[i], HEX);
+      if (i < 5) macAddressString += ":";
+    }
     debugBroadcast = ",\"debugData\":{\"minimumInternal\":" + String(minimumInternal,3) + // *very* peculiar compiler error if the minimumInternal line is formatted exactly like the (perfectly working?!) maximumInternal line?!
                      ",\"maximumInternal\":" + String(maximumInternal,3) +
                      ",\"BROADCAST_RATE\":" + BROADCAST_RATE +
                      ",\"PROBE_RATE\":" + PROBE_RATE +
                      ",\"probeReadingErrorCount\":" + probeReadingErrorCount +
-                     ",\"chipId\":\"" + ESP.getChipId() +
+                     ",\"chipId\":\"" + ESP.getChipId() + // likely to be a number, but wrapped in quotes just in case...
+                     "\",\"macAddress\":\"" + macAddressString + 
                      "\"}";
   #endif
-  return String("{\"celsius\":" + String(broadcastTemperatureC, 2) + ",\"farenheit\":" + String(broadcastTemperatureF, 2) + ",\"probeName\":\"" + probeName + "\""+ debugBroadcast + "}");
+  return String("{\"celsius\":" + String(broadcastTemperatureC, 2) + ",\"fahrenheit\":" + String(broadcastTemperatureF, 2) + ",\"probeName\":\"" + probeName + "\""+ debugBroadcast + "}");
 }
 
 /* 
@@ -446,7 +455,7 @@ String formatBroadcastMessage(double broadcastTemperatureC, double broadcastTemp
  * 
  * - internalTemp is the coldJunctionCelsiusTemperatureReading parameter
  * - rawTemp is the externalCelsiusTemperatureReading parameter
- * - the linearised value is returned, to convert to farenheit do a basic (celsius*(9.0/5.0))+32.0 conversion
+ * - the linearised value is returned, to convert to fahrenheit do a basic (celsius*(9.0/5.0))+32.0 conversion
  * 
  */
 
@@ -460,6 +469,11 @@ double lineariseTemperature(double coldJunctionCelsiusTemperatureReading, double
 
   // Steps 1 & 2. Subtract cold junction temperature from the raw thermocouple temperature.
   thermocoupleVoltage = (externalCelsiusTemperatureReading - coldJunctionCelsiusTemperatureReading)*0.041276; // C * mv/C = mV
+//  #if defined(DEBUG) && defined(VERBOSE)
+//    Serial.println();
+//    Serial.print(F("Thermocouple Voltage calculated as "));
+//    Serial.println(String(thermocoupleVoltage, 5));
+//  #endif
 
   // Step 3. Calculate the cold junction equivalent thermocouple voltage.
   if (coldJunctionCelsiusTemperatureReading >= 0) { // For positive temperatures use appropriate NIST coefficients
@@ -498,6 +512,10 @@ double lineariseTemperature(double coldJunctionCelsiusTemperatureReading, double
       internalVoltage += c[i] * pow(coldJunctionCelsiusTemperatureReading, i) ;
     }
   }
+//  #if defined(DEBUG) && defined(VERBOSE)
+//    Serial.print(F("Internal Voltage calculated as "));
+//    Serial.println(String(internalVoltage, 5));
+//  #endif
 
   // Step 4. Add the cold junction equivalent thermocouple voltage calculated in step 3 to the thermocouple voltage calculated in step 2.
   double totalVoltage = thermocoupleVoltage + internalVoltage;
@@ -539,11 +557,12 @@ double lineariseTemperature(double coldJunctionCelsiusTemperatureReading, double
     correctedTemperature = NAN;
   }
 
-  #if defined(DEBUG) && defined(VERBOSE)
-    Serial.print("Corrected temperature calculated to be: ");
-    Serial.print(correctedTemperature, 5);
-    Serial.println("°C");
-  #endif
+//  #if defined(DEBUG) && defined(VERBOSE)
+//    Serial.print("Corrected temperature calculated to be: ");
+//    Serial.print(correctedTemperature, 5);
+//    Serial.println("°C");
+//    Serial.println();
+//  #endif
   return correctedTemperature;
 }
 
