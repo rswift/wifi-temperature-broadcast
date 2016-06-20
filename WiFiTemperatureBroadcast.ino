@@ -27,12 +27,13 @@
  *  - and/or consume the datagram in a suitable application
  * 
  * ToDo:
- *  - understand the impact of fluctuations of the cold junction temperature
+ *  - understand the impact of fluctuations of the cold junction temperature; OR just solder the thermocouple wire to the MAX31855, solves the problem!
  *  - dynamic WiFi settings to permit the client application to govern settings such as
  *    SSID & password, poll/broadcast rates etc. and store in EEPROM
  *  - test on other boards
  *  - simplify the code, maybe separate out although it is handy having it all in a single file
  *  - add a tilt switch to mean that the temperature readings are taken when the probe is actually in the bean mass, then broadcast afterwards
+ *  - build a small server element into the code to receive instructions (broadcast now, configuration etc.)
  * 
  * Some links:
  *  - Roasthacker: http://roasthacker.com/?p=529 & http://roasthacker.com/?p=552

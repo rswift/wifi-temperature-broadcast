@@ -18,19 +18,26 @@ This code is issued under the “Bill and Ted - be excellent to each other” li
 - and/or consume the datagram in a suitable application
 
 # ToDo
-- understand the impact of fluctuations of the cold junction temperature
+- ~~understand the impact of fluctuations of the cold junction temperature~~ just solder the thermocouple wire to the MAX31855, solves the problem!
 - dynamic WiFi settings to permit the client application to govern settings such as SSID & password, poll/broadcast rates etc. and store in EEPROM
 - test on other boards
 - simplify the code, maybe separate out although it is handy having it all in a single file
 - add a tilt switch to mean that the temperature readings are taken when the probe is actually in the bean mass, then broadcast afterwards
+- build a small server element into the code to receive instructions (broadcast now, configuration etc.)
  
 # Some links
-Roasthacker: http://roasthacker.com/?p=529 & http://roasthacker.com/?p=552
-Adafruit ESP8266: https://www.adafruit.com/products/2471
-Adafruit MAX31855: https://www.adafruit.com/products/269 & https://cdn-shop.adafruit.com/datasheets/MAX31855.pdf
-Using a thermocouple: https://learn.adafruit.com/thermocouple/using-a-thermocouple
-Calibration: https://learn.adafruit.com/calibrating-sensors/maxim-31855-linearization
-TCP dump or Wireshark for packet capture: http://www.tcpdump.org/tcpdump_man.html or https://www.wireshark.org/
-Timer: http://www.switchdoc.com/2015/10/iot-esp8266-timer-tutorial-arduino-ide/
+**Roasthacker**: http://roasthacker.com/?p=529 & http://roasthacker.com/?p=552
+
+**Adafruit ESP8266**: https://www.adafruit.com/products/2471
+
+**Adafruit MAX31855**: https://www.adafruit.com/products/269 & https://cdn-shop.adafruit.com/datasheets/MAX31855.pdf
+
+**Using a thermocouple**: https://learn.adafruit.com/thermocouple/using-a-thermocouple
+
+**Calibration**: https://learn.adafruit.com/calibrating-sensors/maxim-31855-linearization
+
+**TCP dump or Wireshark for packet capture**: http://www.tcpdump.org/tcpdump_man.html or https://www.wireshark.org/
+
+**Timer**: http://www.switchdoc.com/2015/10/iot-esp8266-timer-tutorial-arduino-ide/
 
 Robert Swift - May 2016.
