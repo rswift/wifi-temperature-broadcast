@@ -31,7 +31,6 @@
  *    poll/broadcast rates etc. and store in EEPROM
  *  - test on other boards
  *  - simplify the code, maybe separate out although it is handy having it all in a single file
- *  - add a tilt switch to mean that the temperature readings are taken when the probe is actually in the bean mass, then broadcast afterwards
  *  - build a small server element into the code to receive instructions (broadcast now, configuration etc.)
  * 
  * Some links:
@@ -53,7 +52,6 @@
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiUdp.h>
-//#include <ESP8266WebServer.h>
 
 #include "Adafruit_MAX31855.h"
 #include <ArduinoJson.h>
