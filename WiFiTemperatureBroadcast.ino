@@ -27,12 +27,10 @@
  *  - and/or consume the datagram in a suitable application
  * 
  * ToDo:
- *  - understand the impact of fluctuations of the cold junction temperature; OR just solder the thermocouple wire to the MAX31855, solves the problem!
  *  - dynamic WiFi settings to permit the client application to govern settings such as
- *    SSID & password, poll/broadcast rates etc. and store in EEPROM
+ *    poll/broadcast rates etc. and store in EEPROM
  *  - test on other boards
  *  - simplify the code, maybe separate out although it is handy having it all in a single file
- *  - add a tilt switch to mean that the temperature readings are taken when the probe is actually in the bean mass, then broadcast afterwards
  *  - build a small server element into the code to receive instructions (broadcast now, configuration etc.)
  * 
  * Some links:
@@ -44,61 +42,71 @@
  *  - TCP dump or Wireshark for packet capture: http://www.tcpdump.org/tcpdump_man.html or https://www.wireshark.org/
  *  - Timer: http://www.switchdoc.com/2015/10/iot-esp8266-timer-tutorial-arduino-ide/
  *  
- *  Robert Swift - May 2016.
+ *  Robert Swift - July 2016.
  */
 
 #include <Arduino.h>
-#include "Adafruit_MAX31855.h"
+#include <EEPROM.h>
+#include <float.h> // provides min/max double values
+
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiUdp.h>
-#include <float.h> // provides min/max double values
+
+#include "Adafruit_MAX31855.h"
+#include <ArduinoJson.h>
+
 extern "C" {
 #include "user_interface.h" // needed for the timer
 }
 
-// Commenting the following two line in will enable basic logging, VERBOSE is, well, verbose, but does require DEBUG to be set to do anything meaningful
-#define DEBUG
-//#define VERBOSE
+// disabled by default, but can be overridden via EEPROM and in the future, via the web server...
+bool debugLogging = false;
+bool verboseLogging = false;
 
 // put this up near the top, to make it easy to spot for those not using the same baud rate as me for their FTDI Friend...
 const unsigned int baudRate = 115200;
 
-// comment out to remove all startup delay, I found it was necessary to let the board get its together
+// comment out to remove all startup delay, I found it was necessary to let the board get itself together
 #define STARTUP_DELAY 1500
 
-// This is the name that will be included in the broadcast message
-const char probeName[] = "Gene Café Bean Mass";
-
 // Set the WiFi and network details
-const char networkSSID[] = "SSID";
-const char wifiPassword[] = "password";
-IPAddress localIPAddress, subnetMask, broadcastAddress;
+IPAddress localIPAddress, subnetMask, multicastAddress(239,31,8,55), broadcastAddress;
+word udpRemotePort = 31855;
 
-// no reason, just the number of the temperature amp board
-const int udpRemotePort = 31855;
+// a check for EEPROM health and a simple struct to make reading/writing easier
+const byte eepromComparison = B10101010;
+#define MAX_LENGTH 127
+
+struct eeprom_config {
+  byte healthBight = !eepromComparison;
+  char networkSSID[WL_SSID_MAX_LENGTH] = "SSID";
+  char wifiPassword[WL_WPA_KEY_MAX_LENGTH] = "PASSWORD";
+  bool debugEnabled = true;
+  bool verboseEnabled = true;
+};
 
 // Define the pin mapping from the MAX31855 interface to the microcontroller (https://learn.adafruit.com/thermocouple/using-a-thermocouple)
-#define DO 2 // DO (data out) is an output from the MAX31855 (input to the microcontroller) which carries each bit of data
-#define CS 4 // CS (chip select) is an input to the MAX31855 (output from the microcontroller) and tells the chip when its time to read the thermocouple and output more data
+#define DO 2  // DO (data out) is an output from the MAX31855 (input to the microcontroller) which carries each bit of data
+#define CS 4  // CS (chip select) is an input to the MAX31855 (output from the microcontroller) and tells the chip when its time to read the thermocouple and output more data
 #define CLK 5 // CLK (clock) is an input to the MAX31855 (output from microcontroller) to indicate when to present another bit of data
 
 // error and status reporting LED's, comment out to disable the illumination a given LED
-#define STATUS_LED 12 // blue
-#define ERROR_LED 13 // red - unlucky for some...
+#define STATUS_LED 12  // blue
+#define ERROR_LED 13   // red - unlucky for some...
 #define READING_LED 14 // green
+
+// the pin to interrupt on
+#define SWITCH_PIN 0 // probably a bad choice, but I'm a bit stuck unless I de-sugru the whole thing and start again...
 
 /* Set the various timers and allocate some storage; the goal is to have sufficient to store readings for
  * BROADCAST_RATE_SECONDS seconds, so add a bit just in case the broadcast poll takes longer to trigger than
  * expected, but the logic will roll round anyway to ensure no overrun
- * 
  */
-#define BROADCAST_RATE 15 // seconds
-#define PROBE_RATE 1 // seconds
+#define DRUM_ROTATION_SPEED 8  // seconds
+#define PROBE_RATE 0.25        // seconds
+#define ROLLING_AVERAGE_COUNT (int)(((DRUM_ROTATION_SPEED / 2) / PROBE_RATE) * 1.25) // cast to int just in case the division isn't a yummy 0 remainder, and add 25% as a contingency
 
-#define ROLLING_AVERAGE_COUNT (int)((BROADCAST_RATE / PROBE_RATE) + 2) // cast to int just in case the division isn't a yummy 0 remainder, and adding 2 [seconds] should be all that is needed
-
-double internalRollingAverage[ROLLING_AVERAGE_COUNT] = {};
 double celsiusRollingAverage[ROLLING_AVERAGE_COUNT] = {};
 int rollingAveragePosition = 0;
 bool indexRolledOver = false; // this will allow broadcastReadings() to know if the whole array should be processed or just up to rollingAveragePosition
@@ -113,28 +121,22 @@ WiFiUDP udp;
 
 // track any problems reading the temperatures
 bool probeReadingError = false;
-#ifdef DEBUG
 unsigned long probeReadingErrorCount = 0;
-#endif
+
+// https://github.com/rswift/wifi-temperature-broadcast/wiki/JSON-Payload-Format
+const int probeType = 0; // TEMPERATURE
+const int temperatureProbeType = 0; // BEAN_MASS
+const char probeName[] = "Gene Café Bean Mass";
 
 // reading and broadcast timer controls
-bool volatile shouldReadProbes = false;
-bool volatile shouldBroadcast = false;
+volatile bool shouldReadProbes = false;
+volatile bool shouldBroadcast = false;
+volatile bool haveBroadcastSinceRead = false;
+volatile unsigned long detachedAt = 0;          // essentially a debouncer, need to ensure that at least a given period of time has passed before setting a new interrupt
+const unsigned long reattachmentDelay = 2000;  // set at two seconds, drum takes about seven to rotate fully so this should be enough time to allow the switch to settle
 
-// call back functions kept as simple as possible...
-os_timer_t probeTimer;
-void probeTimerCallback(void *pArg) {
-  shouldReadProbes = true;
-}
-
-os_timer_t broadcastTimer;
-void broadcastTimerCallback(void *pArg) {
-  shouldBroadcast = true;
-}
-
-// start reading from the first byte (address 0) of the EEPROM
-int address = 0;
-byte value;
+// set the reference for battery monitoring
+ADC_MODE(ADC_VCC);
 
 // set things up...
 void setup() {
@@ -160,79 +162,112 @@ void setup() {
     delay(50);
   }
 
-  Serial.println(); Serial.print(F("In setup, "));
-  #ifdef DEBUG
-    #ifdef VERBOSE
-      Serial.println(F("verbose debugging is enabled"));
-    #else
-      Serial.println(F("debugging is enabled"));
-    #endif
-  #else
-    Serial.println(F("debugging is not enabled"));
+  // read the EEPROM data and check the first byte for good health
+  eeprom_config config;
+  const int eepromAddress = 0;
+  EEPROM.begin(sizeof(config.healthBight));
+  EEPROM.get(eepromAddress, config.healthBight);
+
+  if (debugLogging && verboseLogging) {
+    Serial.print("EEPROM config size: "); Serial.println(sizeof(config));
+    Serial.print("EEPROM config.healthBight: "); Serial.println(config.healthBight, BIN);
+    Serial.print("EEPROM health comparison : "); Serial.println(eepromComparison, BIN);
+    Serial.print("EEPROM config.networkSSID: "); Serial.print(config.networkSSID); Serial.println(F("¶")); // pilcrow to make it clear where the end of the value is...
+    Serial.print("EEPROM config.wifiPassword: "); Serial.print(config.wifiPassword); Serial.println(F("¶"));
+}
+
+  if (config.healthBight == eepromComparison) {
+    // health check passes, read the whole thing...
+    EEPROM.begin(sizeof(config));
+    EEPROM.get(eepromAddress, config);
+
+  } else {
+    // the comparison doesn't match, so write the data
+    if (debugLogging) {
+      Serial.println(F("Writing data to EEPROM as health byte didn't match..."));
+    }
+
+    config.healthBight = eepromComparison;
+    EEPROM.begin(sizeof(config));
+    EEPROM.put(eepromAddress, config);
+    EEPROM.commit();
+  }
+
+  // transfer logging settings
+  debugLogging = config.debugEnabled;
+  verboseLogging = config.verboseEnabled;
+
+  Serial.println();
+  Serial.printf("In setup, %sdebugging is%senabled\n", ((verboseLogging) ? "verbose " : ""), ((debugLogging) ? " " : " not "));
+  if (!debugLogging && !verboseLogging) {
     Serial.end(); // close down what isn't needed
-  #endif
+  }
 
   // apparently the MAX13855 needs time to 'settle down'
   delay(500);
 
-  #ifdef DEBUG
+  if (debugLogging) {
     Serial.print(F("Attempting to connect to "));
-    Serial.print(networkSSID);
-  #endif
+    Serial.print(config.networkSSID);
+    if (verboseLogging) {
+      Serial.print(F(" using password "));
+      Serial.print(config.wifiPassword);
+    }
+  }
 
-  WiFi.begin(networkSSID, wifiPassword);
+  // station mode then attempt connections until granted...
+  WiFi.mode(WIFI_STA);
+  long connectDelay = 10;
   while (WiFi.status() != WL_CONNECTED) {
+    WiFi.begin(config.networkSSID, config.wifiPassword);
     #ifdef STATUS_LED
       flashLED(STATUS_LED, 1);
     #endif
-    #if defined(DEBUG) && defined(VERBOSE)
-      Serial.print(F("."));
-      Serial.flush();
-    #endif
-    delay (500);
+    if (debugLogging && verboseLogging) { Serial.print(F(".")); Serial.flush(); }
+    delay(connectDelay);
+    connectDelay += connectDelay;
   }
 
   localIPAddress = WiFi.localIP();
   subnetMask = WiFi.subnetMask();
   broadcastAddress = localIPAddress | (~subnetMask); // wonderful simplicity (http://stackoverflow.com/a/777631/259122)
 
-  #ifdef DEBUG
-    Serial.print(F(" connected with IP address "));
-    Serial.print(localIPAddress);
-    Serial.print(F(" netmask "));
-    Serial.print(subnetMask);
-    Serial.print(F(" using broadcast address "));
-    Serial.println(broadcastAddress);
-  #endif
+  if (debugLogging) {
+    Serial.print(F(" connected with IP address ")); Serial.print(localIPAddress); Serial.print(F(" netmask ")); Serial.print(subnetMask); Serial.print(F(" using broadcast address ")); Serial.println(broadcastAddress);
+  }
 
-  // setup the call backs to trigger (in milliseconds, hence the multiplier)
-  os_timer_setfn(&probeTimer, probeTimerCallback, NULL);
-  os_timer_arm(&probeTimer, (PROBE_RATE * 1000), true); // 
-  os_timer_setfn(&broadcastTimer, broadcastTimerCallback, NULL);
-  os_timer_arm(&broadcastTimer, (BROADCAST_RATE * 1000), true); // 
+  // setup the switch interrupt
+  pinMode(SWITCH_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), switchActivated, RISING);
 
   #ifdef STATUS_LED
-    // visually indicate end of setup...
-    flashLED(STATUS_LED, 5);
+    flashLED(STATUS_LED, 5); // visually indicate end of setup...
   #endif
+
 }
 
 // nice and simple :)
 void loop() {
-  #if defined(DEBUG) && defined(VERBOSE)
-    Serial.print(F("shouldReadProbes is "));
-    Serial.print(shouldReadProbes);
-    Serial.print(F(" and shouldBroadcast is "));
-    Serial.println(shouldBroadcast);
-  #endif
+  if (debugLogging && verboseLogging) {
+    Serial.print(F("shouldReadProbes is ")); Serial.print(shouldReadProbes); Serial.print(F(", shouldBroadcast is ")); Serial.print(shouldBroadcast); Serial.print(F(" and haveBroadcastSinceRead is ")); Serial.println(haveBroadcastSinceRead);
+  }
+
+  if ((millis() - detachedAt) > reattachmentDelay) {
+    if (shouldReadProbes) {
+      attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), switchDeactivated, FALLING);
+    } else {
+      attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), switchActivated, RISING);
+    }
+  }
 
   // prioritise broadcast over reading the probes
-  if (shouldBroadcast) {
-    shouldBroadcast = false;
+  if (shouldBroadcast && !haveBroadcastSinceRead) {
     broadcastReadings();
+    shouldBroadcast = false;
+    shouldReadProbes = false;
+    haveBroadcastSinceRead = true;
   }
   if (shouldReadProbes) {
-    shouldReadProbes = false;
     readProbes();
   }
 
@@ -251,10 +286,8 @@ void readProbes() {
   #endif
   if (isnan(internalTemperature) || isnan(temperatureCelsius)) {
     probeReadingError = true;
-    #ifdef DEBUG
-      probeReadingErrorCount++;
-      Serial.println("Something is wrong with thermocouple! Is it grounded?");
-    #endif
+    probeReadingErrorCount++;
+    if (debugLogging) { Serial.println("Something is wrong with thermocouple! Is it grounded?"); }
     #ifdef ERROR_LED
       digitalWrite(ERROR_LED, HIGH); // turn on the error indication LED
     #endif
@@ -274,7 +307,7 @@ void readProbes() {
     maximumInternal = internalTemperature;
   }
 
-  #ifdef DEBUG
+  if (debugLogging) {
     Serial.print(F("Internal temperature is "));
     Serial.print(internalTemperature);
     Serial.print(F("°C and the probe is reading (linearised) "));
@@ -283,47 +316,32 @@ void readProbes() {
     Serial.print(lineariseTemperature(internalTemperature, temperatureCelsius));
     Serial.print(F("°C) and readError is: "));
     Serial.println(thermocouple.readError());
-  #endif
+  }
 
   // some basic protection logic just in case the broadcast hasn't happened in a timely manner...
   if (rollingAveragePosition >= ROLLING_AVERAGE_COUNT) {
-    #ifdef DEBUG
-      Serial.println("ERROR! resetting rolling average index to zero - broadcast can't have happened at the correct time");
-    #endif
+    if (debugLogging) { Serial.println("ERROR! resetting rolling average index to zero - broadcast can't have happened at the correct time"); }
     rollingAveragePosition = 0;
     indexRolledOver = true;
   }
 
   // write the temperature data values to the rolling average array
-  internalRollingAverage[rollingAveragePosition] = internalTemperature;
   celsiusRollingAverage[rollingAveragePosition] = lineariseTemperature(internalTemperature, temperatureCelsius);
+
+  if (debugLogging && verboseLogging) { Serial.print("Setting celsiusRollingAverage["); Serial.print(rollingAveragePosition); Serial.print("]="); Serial.println(celsiusRollingAverage[rollingAveragePosition]); }
 
   // update the array offset for the next capture before looping again
   rollingAveragePosition++;
 
-  #if defined(DEBUG) && defined(VERBOSE)
-    // -1 to compensate for the ++
-    Serial.print("Setting internalRollingAverage[");
-    Serial.print(rollingAveragePosition -1);
-    Serial.print("]=");
-    Serial.println(internalRollingAverage[rollingAveragePosition -1]);
-    Serial.print("Setting celsiusRollingAverage[");
-    Serial.print(rollingAveragePosition -1);
-    Serial.print("]=");
-    Serial.println(celsiusRollingAverage[rollingAveragePosition -1]);
-  #endif
 }
 
 void broadcastReadings() {
 
   // if there was a problem reading the probes or there is no data to broadcast, alert and return
   if ((rollingAveragePosition == 0 && !indexRolledOver) || probeReadingError) {
-    #ifdef DEBUG
-      Serial.print(F("Not going to broadcast readings, rollingAveragePosition is "));
-      Serial.print(rollingAveragePosition);
-      Serial.print(F(" and probeReadingError is "));
-      Serial.println(probeReadingError);
-    #endif
+    if (debugLogging) {
+      Serial.print(F("Not going to broadcast readings, rollingAveragePosition is ")); Serial.print(rollingAveragePosition); Serial.print(F(" and probeReadingError is ")); Serial.println(probeReadingError);
+    }
     #ifdef ERROR_LED
       flashLED(ERROR_LED, 3);
     #endif
@@ -342,69 +360,59 @@ void broadcastReadings() {
   }
 
   for (int i = 0; i < endOfIndex; i++) {
-    #if defined(DEBUG) && defined(VERBOSE)
-      Serial.printf("Reading celsiusRollingAverage[%d]=", i);
-      Serial.println(celsiusRollingAverage[i]);
-    #endif
+    if (debugLogging && verboseLogging) { Serial.printf("Reading celsiusRollingAverage[%d]=", i); Serial.println(celsiusRollingAverage[i]); }
     broadcastTemperatureC += celsiusRollingAverage[i];
   }
-
-  // reset the fields for readProbes()
-  rollingAveragePosition = 0;
-  indexRolledOver = false;
 
   broadcastTemperatureC = broadcastTemperatureC / ((double)endOfIndex); // adding 0.0 forces the int to be cast, probably a crappy way of doing it...
   broadcastTemperatureF = (broadcastTemperatureC * (9.0/5.0)) + 32.0;
 
-  String broadcastMessage = formatBroadcastMessage(broadcastTemperatureC, broadcastTemperatureF);
+  String broadcastMessage = formatBroadcastMessage(broadcastTemperatureC); //, broadcastTemperatureF);
   byte broadcastBytes[broadcastMessage.length() + 1];
   broadcastMessage.getBytes(broadcastBytes, broadcastMessage.length() + 1);
-  #if defined(DEBUG) && defined(VERBOSE)
-    Serial.print(F("minimumInternal="));
-    Serial.println(minimumInternal);
-    Serial.print(F("maximumInternal="));
-    Serial.println(maximumInternal);
-    Serial.printf("Broadcast [%s] to UDP port %d via ", broadcastBytes, udpRemotePort);
-    Serial.println(broadcastAddress);
-  #endif
+  if (debugLogging && verboseLogging) {
+    Serial.print(F("minimumInternal=")); Serial.println(minimumInternal);
+    Serial.print(F("maximumInternal=")); Serial.println(maximumInternal);
+    Serial.printf("Broadcast [%s] to UDP port %d via ", broadcastBytes, udpRemotePort); Serial.println(broadcastAddress);
+  }
 
   // check the WiFi connection, then send the datagram
   if (WiFi.status() == WL_CONNECTED) {
-    #ifdef DEBUG
-      Serial.println(F("Broadcasting..."));
-    #endif
+    if (debugLogging) { Serial.println(F("Broadcasting...")); }
+
     if (udp.beginPacket(broadcastAddress, udpRemotePort) == 1) {
+//    if (udp.beginPacketMulticast(multicastAddress, udpRemotePort, WiFi.localIP()) == 1) {
       udp.write(broadcastBytes, broadcastMessage.length() + 0);
       if (udp.endPacket() != 1) {
-        #ifdef DEBUG
-          Serial.print(F("ERROR! UDP broadcast failed!"));
-        #endif
+        if (debugLogging) { Serial.print(F("ERROR! UDP broadcast failed!")); }
         #ifdef ERROR_LED
           flashLED(ERROR_LED, 3);
         #endif
-      #ifdef STATUS_LED // oops, this was set to DEBUG, what a muppet...
+      #ifdef STATUS_LED
       } else {
         flashLED(STATUS_LED, 1);
       #endif
       }
     } else {
-      #ifdef DEBUG
-        Serial.print(F("ERROR! UDP broadcast setup failed!"));
-      #endif
+      if (debugLogging) { Serial.print(F("ERROR! UDP broadcast setup failed!")); }
       #ifdef ERROR_LED
         flashLED(ERROR_LED, 3);
       #endif
     }
   } else {
     // a problem occurred! need to implement something better to advertise the fact...
-    #ifdef DEBUG
+    if (debugLogging) {
       Serial.print(F("ERROR! WiFi status showing as not connected: "));
       Serial.println(WiFi.status());
-    #endif
+    }
     #ifdef ERROR_LED
       flashLED(ERROR_LED, 5);
     #endif
   }
+
+  // reset the fields for readProbes()
+  rollingAveragePosition = 0;
+  indexRolledOver = false;
 }
 
 #if defined(ERROR_LED) || defined(STATUS_LED) || defined(READING_LED) // minimise the code where possible
@@ -421,32 +429,68 @@ void flashLED(int ledToFlash, int flashCount) {
 }
 #endif
 
-/*
- * Trivial function to format the data to broadcast to listners...
- * Implemented this way to make it easier to tweak as desired
- */
-String formatBroadcastMessage(double broadcastTemperatureC, double broadcastTemperatureF) {
-  // construct a String object that will contain a basic JSON structure
-  // could have used a JSON library but this is so fixed it really didn't seem worth the effort
-  String debugBroadcast = "";
-  #ifdef DEBUG
-    byte macAddress[6];
-    WiFi.macAddress(macAddress);
-    String macAddressString;
-    for (int i = 0; i < 6; i++) {
-      macAddressString += String(macAddress[i], HEX);
-      if (i < 5) macAddressString += ":";
+// Trivial function to format the data to broadcast to listners...
+String formatBroadcastMessage(double broadcastTemperatureC) {
+  // possibly slower, but the overhead isn't a major concern in relation to the benefit
+  // https://github.com/bblanchon/ArduinoJson/wiki/FAQ#what-are-the-differences-between-staticjsonbuffer-and-dynamicjsonbuffer
+  DynamicJsonBuffer jsonBuffer;
+  JsonObject& jsonResponse = jsonBuffer.createObject();
+
+  JsonArray& readings = jsonResponse.createNestedArray("readings");
+  JsonObject& reading = readings.createNestedObject();
+  reading["reading"] = double_with_n_digits(broadcastTemperatureC, 2);
+  reading["scale"] = "C";
+  reading["probeName"] = probeName;
+  reading["probeType"] = probeType;
+  reading["probeSubType"] = temperatureProbeType;
+
+  JsonObject& systemInformation = jsonResponse.createNestedObject("systemInformation");
+  systemInformation["VCC"] = double_with_n_digits((ESP.getVcc() / 1024.0), 3);
+  systemInformation["serverPort"] = SERVER_PORT;
+
+  if (debugLogging) {
+    JsonObject& debugData = jsonResponse.createNestedObject("debugData");
+    debugData["minimumInternal"] = double_with_n_digits(minimumInternal, 3);
+    debugData["maximumInternal"] = double_with_n_digits(maximumInternal, 3);
+    debugData["indexRolledOver"] = indexRolledOver;
+    debugData["rollingAveragePosition"] = rollingAveragePosition;
+    int celsiusRollingAverageSize = sizeof(celsiusRollingAverage) / sizeof(celsiusRollingAverage[0]);
+    debugData["celsiusRollingAverageSize"] = celsiusRollingAverageSize;
+    JsonArray& rawCelsiusReadingValues = debugData.createNestedArray("rawCelsiusReadingValues");
+    for (int i = 0; i < celsiusRollingAverageSize; i++) {
+      rawCelsiusReadingValues.add(celsiusRollingAverage[i]);
     }
-    debugBroadcast = ",\"debugData\":{\"minimumInternal\":" + String(minimumInternal,3) + // *very* peculiar compiler error if the minimumInternal line is formatted exactly like the (perfectly working?!) maximumInternal line?!
-                     ",\"maximumInternal\":" + String(maximumInternal,3) +
-                     ",\"BROADCAST_RATE\":" + BROADCAST_RATE +
-                     ",\"PROBE_RATE\":" + PROBE_RATE +
-                     ",\"probeReadingErrorCount\":" + probeReadingErrorCount +
-                     ",\"chipId\":\"" + ESP.getChipId() + // likely to be a number, but wrapped in quotes just in case...
-                     "\",\"macAddress\":\"" + macAddressString + 
-                     "\"}";
-  #endif
-  return String("{\"celsius\":" + String(broadcastTemperatureC, 2) + ",\"fahrenheit\":" + String(broadcastTemperatureF, 2) + ",\"probeName\":\"" + probeName + "\""+ debugBroadcast + "}");
+    debugData["DRUM_ROTATION_SPEED"] = DRUM_ROTATION_SPEED;
+    debugData["PROBE_RATE"] = PROBE_RATE;
+    debugData["probeReadingErrorCount"] = probeReadingErrorCount;
+    debugData["chipId"] = ESP.getChipId();
+    Serial.print(F("JSON Object: "));
+    jsonResponse.prettyPrintTo(Serial);
+    Serial.println();
+  }
+
+  String broadcastData;
+  jsonResponse.printTo(broadcastData);
+  return broadcastData;
+}
+
+/* interrupt handler, to be kept to the bare minimum
+   the logic is simple, if the switch is 'on' then read the probes, when it goes off, broadcast the readings
+ */
+void switchActivated() {
+  // switch has gone on, start reading and do not broadcast
+  shouldReadProbes = true;
+  shouldBroadcast = false;
+  haveBroadcastSinceRead = false;
+  detachInterrupt(digitalPinToInterrupt(SWITCH_PIN));
+  detachedAt = millis();
+}
+
+void switchDeactivated() {
+  shouldReadProbes = false;
+  shouldBroadcast = true;
+  detachInterrupt(digitalPinToInterrupt(SWITCH_PIN));
+  detachedAt = millis();
 }
 
 /* 
@@ -470,11 +514,6 @@ double lineariseTemperature(double coldJunctionCelsiusTemperatureReading, double
 
   // Steps 1 & 2. Subtract cold junction temperature from the raw thermocouple temperature.
   thermocoupleVoltage = (externalCelsiusTemperatureReading - coldJunctionCelsiusTemperatureReading)*0.041276; // C * mv/C = mV
-//  #if defined(DEBUG) && defined(VERBOSE)
-//    Serial.println();
-//    Serial.print(F("Thermocouple Voltage calculated as "));
-//    Serial.println(String(thermocoupleVoltage, 5));
-//  #endif
 
   // Step 3. Calculate the cold junction equivalent thermocouple voltage.
   if (coldJunctionCelsiusTemperatureReading >= 0) { // For positive temperatures use appropriate NIST coefficients
@@ -513,10 +552,6 @@ double lineariseTemperature(double coldJunctionCelsiusTemperatureReading, double
       internalVoltage += c[i] * pow(coldJunctionCelsiusTemperatureReading, i) ;
     }
   }
-//  #if defined(DEBUG) && defined(VERBOSE)
-//    Serial.print(F("Internal Voltage calculated as "));
-//    Serial.println(String(internalVoltage, 5));
-//  #endif
 
   // Step 4. Add the cold junction equivalent thermocouple voltage calculated in step 3 to the thermocouple voltage calculated in step 2.
   double totalVoltage = thermocoupleVoltage + internalVoltage;
@@ -549,21 +584,15 @@ double lineariseTemperature(double coldJunctionCelsiusTemperatureReading, double
     }
   } else {
     // NIST only has data for K-type thermocouples from -200C to +1372C. If the temperature is not in that range, set temp to impossible value.
-    #ifdef DEBUG
+    if (debugLogging && verboseLogging) {
       Serial.println("Temperature is out of range, this should never happen!");
-    #endif
+    }
     #ifdef ERROR_LED
       flashLED(ERROR_LED, 2);
     #endif
     correctedTemperature = NAN;
   }
 
-//  #if defined(DEBUG) && defined(VERBOSE)
-//    Serial.print("Corrected temperature calculated to be: ");
-//    Serial.print(correctedTemperature, 5);
-//    Serial.println("°C");
-//    Serial.println();
-//  #endif
   return correctedTemperature;
 }
 
