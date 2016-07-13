@@ -446,7 +446,6 @@ String formatBroadcastMessage(double broadcastTemperatureC) {
 
   JsonObject& systemInformation = jsonResponse.createNestedObject("systemInformation");
   systemInformation["VCC"] = double_with_n_digits((ESP.getVcc() / 1024.0), 3);
-  systemInformation["serverPort"] = SERVER_PORT;
 
   if (debugLogging) {
     JsonObject& debugData = jsonResponse.createNestedObject("debugData");
