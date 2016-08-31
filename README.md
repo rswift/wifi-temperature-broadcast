@@ -1,7 +1,7 @@
 # WiFi Temperature Broadcast
 This is a simple application, firmly inspired by Roasthacker to capture and broadcast the bean mass temperature from my Gene Café CBR-101 coffee roaster. The ultimate goal is to feed these temperatures into the Roastmaster Data Logger for hands-free temperature capture directly on the iPad…
 
-Incorporates the great work done by @rainfroginc to create his Roastmaster Datagram Protocol - I'm very grateful to Danny for his support getting this far, and it is exciting to be helping him develop Roastmaster too (https://itunes.apple.com/gb/app/roastmaster/id375526217?mt=8)
+Incorporates the great work done by @rainfroginc to create his Roastmaster Datagram Protocol - I'm very grateful to Danny for his support getting this far, and it is exciting to be helping him develop Roastmaster too
 
 It has been written and tested on the Adafruit HUZZAH ESP8266 with the Adafruit MAX31855 plus K-Type Thermocouple. It is therefore based on the many, excellent example sketches available within the Arduino IDE and elsewhere…
 
@@ -29,6 +29,8 @@ This code is issued under the “Bill and Ted - be excellent to each other” li
 - ~~add a tilt switch to mean that the temperature readings are taken when the probe is actually in the bean mass, then broadcast afterwards~~
  
 # Some links
+**Roastmaster**: https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs & https://itunes.apple.com/gb/app/roastmaster/id375526217?mt=8
+
 **Roasthacker**: http://roasthacker.com/?p=529 & http://roasthacker.com/?p=552
 
 **Adafruit ESP8266**: https://www.adafruit.com/products/2471
@@ -43,4 +45,4 @@ This code is issued under the “Bill and Ted - be excellent to each other” li
 
 **Timer**: http://www.switchdoc.com/2015/10/iot-esp8266-timer-tutorial-arduino-ide/
 
-Robert Swift - May 2016.
+Robert Swift - August 2016.
