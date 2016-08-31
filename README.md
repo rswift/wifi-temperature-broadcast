@@ -1,6 +1,8 @@
 # WiFi Temperature Broadcast
 This is a simple application, firmly inspired by Roasthacker to capture and broadcast the bean mass temperature from my Gene Café CBR-101 coffee roaster. The ultimate goal is to feed these temperatures into the Roastmaster Data Logger for hands-free temperature capture directly on the iPad…
 
+Incorporates the great work done by @rainfroginc to create his Roastmaster Datagram Protocol - I'm very grateful to Danny for his support getting this far, and it is exciting to be helping him develop Roastmaster too (https://itunes.apple.com/gb/app/roastmaster/id375526217?mt=8)
+
 It has been written and tested on the Adafruit HUZZAH ESP8266 with the Adafruit MAX31855 plus K-Type Thermocouple. It is therefore based on the many, excellent example sketches available within the Arduino IDE and elsewhere…
 
 The payload is formatted as JSON, but is described in a method so can be changed as desired
@@ -19,11 +21,12 @@ This code is issued under the “Bill and Ted - be excellent to each other” li
 
 # ToDo
 - ~~understand the impact of fluctuations of the cold junction temperature~~ just solder the thermocouple wire to the MAX31855, solves the problem!
+- remove hardware tilt switch trigger as this is not sufficiently accurate, replace with hall effect switch and a WiFi triggered command
+- build a small server element into the code to receive instructions (broadcast now, configuration etc.)
 - dynamic WiFi settings to permit the client application to govern settings such as SSID & password, poll/broadcast rates etc. and store in EEPROM
 - test on other boards
 - simplify the code, maybe separate out although it is handy having it all in a single file
-- add a tilt switch to mean that the temperature readings are taken when the probe is actually in the bean mass, then broadcast afterwards
-- build a small server element into the code to receive instructions (broadcast now, configuration etc.)
+- ~~add a tilt switch to mean that the temperature readings are taken when the probe is actually in the bean mass, then broadcast afterwards~~
  
 # Some links
 **Roasthacker**: http://roasthacker.com/?p=529 & http://roasthacker.com/?p=552
