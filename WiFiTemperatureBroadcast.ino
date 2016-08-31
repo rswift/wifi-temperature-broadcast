@@ -8,7 +8,8 @@
  * plus K-Type Thermocouple. It is therefore based on the many, excellent example sketches
  * available within the Arduino IDE and elsewhere...
  * 
- * The payload is formatted as JSON, but is described in a method so can be changed as desired
+ * There are two payloads, both formatted as JSON, one adheres to the Roastmaster Datagram
+ * Protocol, the other is my own concoction...
  * 
  * This stuff really is amazing, when I think how big the 300 baud modems I used to provide
  * remote support for customers around the globe, to be able to get this much capability
@@ -17,6 +18,10 @@
  * This code is issued under the "Bill and Ted - be excellent to each other" licence (which
  * has no content, just, well, be excellent to each other), however, I have included the licence
  * files from my original starting file (serialthermocouple.ino) at the bottom of this sketch...
+ * 
+ * Danny from Roastmaster provides an example application on his Github page, and as of August 2016
+ * his software is still at the pre-release stage so is potentially subject to change. Also note
+ * that he is releasing his software under the MIT Licence.
  * 
  * Usage:
  *  - set the probeName, WiFi and UDP broadcast port settings
@@ -27,13 +32,17 @@
  *  - and/or consume the datagram in a suitable application
  * 
  * ToDo:
- *  - dynamic WiFi settings to permit the client application to govern settings such as
- *    poll/broadcast rates etc. and store in EEPROM
+ *  - remove hardware tilt switch trigger as this is not sufficiently accurate, replace
+ *    with hall effect switch and a WiFi triggered command
+ *  - build a small server element into the code to receive instructions (broadcast now,
+ *    configuration etc.)
  *  - test on other boards
- *  - simplify the code, maybe separate out although it is handy having it all in a single file
- *  - build a small server element into the code to receive instructions (broadcast now, configuration etc.)
+ *  - simplify the code, maybe separate out although it is handy having it all in a
+ *    single file (to a point!)
  * 
  * Some links:
+ *  - Roastmaster Datagram Protocol: https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs
+ *  
  *  - Roasthacker: http://roasthacker.com/?p=529 & http://roasthacker.com/?p=552
  *  - Adafruit ESP8266: https://www.adafruit.com/products/2471
  *  - Adafruit MAX31855: https://www.adafruit.com/products/269 & https://cdn-shop.adafruit.com/datasheets/MAX31855.pdf
@@ -42,7 +51,7 @@
  *  - TCP dump or Wireshark for packet capture: http://www.tcpdump.org/tcpdump_man.html or https://www.wireshark.org/
  *  - Timer: http://www.switchdoc.com/2015/10/iot-esp8266-timer-tutorial-arduino-ide/
  *  
- *  Robert Swift - July 2016.
+ *  Robert Swift - August 2016.
  */
 
 #include <Arduino.h>
@@ -71,12 +80,12 @@ const unsigned int baudRate = 115200;
 #define STARTUP_DELAY 1500
 
 // Set the WiFi and network details
-IPAddress localIPAddress, subnetMask, multicastAddress(239,31,8,55), broadcastAddress;
-word udpRemotePort = 31855;
+IPAddress localIPAddress, rdpIPAddress, subnetMask, multicastAddress(239,31,8,55), rdpMulticastAddress(224,0,0,1), broadcastAddress;
+word udpRemotePort = 31855; // for my own needs
+word rdpRemotePort = 5050;  // for Roastmaster
 
 // a check for EEPROM health and a simple struct to make reading/writing easier
 const byte eepromComparison = B10101010;
-#define MAX_LENGTH 127
 
 struct eeprom_config {
   byte healthBight = !eepromComparison;
@@ -116,8 +125,9 @@ double maximumInternal = DBL_MIN;
 // initialise the thermocouple
 Adafruit_MAX31855 thermocouple(CLK, CS, DO);
 
-// initialise the UDP object
+// initialise the UDP objects, one for command & control, the other for Roastmaster
 WiFiUDP udp;
+WiFiUDP rdpUdp;
 
 // track any problems reading the temperatures
 bool probeReadingError = false;
@@ -127,6 +137,10 @@ unsigned long probeReadingErrorCount = 0;
 const int probeType = 0; // TEMPERATURE
 const int temperatureProbeType = 0; // BEAN_MASS
 const char probeName[] = "Gene Café Bean Mass";
+
+int rdpEpoch = 1; // all reference will be rdpEpoch++ to keep the value going up, chances of rolling over are square root of not much...
+const int rdpMaxAckListenAttempts = 10; // arbitary value based on no science whatsoever...
+bool gotRDPServer = false;
 
 // reading and broadcast timer controls
 volatile bool shouldReadProbes = false;
@@ -138,7 +152,49 @@ const unsigned long reattachmentDelay = 2000;  // set at two seconds, drum takes
 // set the reference for battery monitoring
 ADC_MODE(ADC_VCC);
 
-// set things up...
+/* Taken directly from https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs/blob/master/Roastmaster_RDP_Probe_Host_SBC.ino 
+ * and https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs/blob/master/RDP%20Data%20Sheet.pdf
+ */
+// RDP Keys
+#define RDPKey_Version "RPVersion"
+#define RDPKey_Serial "RPSerial"
+#define RDPKey_Epoch "RPEpoch"
+#define RDPKey_Payload "RPPayload"
+#define RDPKey_EventType "RPEventType"
+#define RDPKey_Channel "RPChannel"
+#define RDPKey_Value "RPValue"
+#define RDPKey_Meta "RPMetaType"
+
+// RDP String Constants
+#define RDPValue_Version "RDP_1.0"
+
+// RDP Event Type Integer Constants
+typedef enum {
+    RDPEventType_SYN = 1,
+    RDPEventType_ACK,
+    RDPEventType_Temperature,
+    RDPEventType_Control,
+    RDPEventType_Pressure,
+    RDPEventType_Remote,
+} RDPEventType;
+
+// RDP Meta Type Integer Constants
+typedef enum {
+
+    //Temperature meta constants
+    //Valid with event type RDPEventType_Temperature
+    RDPMetaType_BTTemp = 1000,
+    RDPMetaType_ETTemp,
+    RDPMetaType_METTemp,
+    RDPMetaType_HeatBoxTemp,
+    RDPMetaType_ExhaustTemp,
+    RDPMetaType_AmbientTemp,
+    RDPMetaType_BTCoolingTemp,
+} RDPMetaType;
+
+/* 
+ *  Lots of things happen during the setup, but mainly, WiFi connectivity then handshake with Roastmaster
+ */
 void setup() {
 
   #ifdef STARTUP_DELAY
@@ -183,9 +239,7 @@ void setup() {
 
   } else {
     // the comparison doesn't match, so write the data
-    if (debugLogging) {
-      Serial.println(F("Writing data to EEPROM as health byte didn't match..."));
-    }
+    if (debugLogging) { Serial.println(F("Writing data to EEPROM as health byte didn't match...")); }
 
     config.healthBight = eepromComparison;
     EEPROM.begin(sizeof(config));
@@ -197,21 +251,15 @@ void setup() {
   debugLogging = config.debugEnabled;
   verboseLogging = config.verboseEnabled;
 
-  Serial.println();
-  Serial.printf("In setup, %sdebugging is%senabled\n", ((verboseLogging) ? "verbose " : ""), ((debugLogging) ? " " : " not "));
+  Serial.println(); Serial.printf("In setup, %sdebugging is%senabled\n", ((verboseLogging) ? "verbose " : ""), ((debugLogging) ? " " : " not "));
   if (!debugLogging && !verboseLogging) {
     Serial.end(); // close down what isn't needed
   }
 
-  // apparently the MAX13855 needs time to 'settle down'
-  delay(500);
-
   if (debugLogging) {
-    Serial.print(F("Attempting to connect to "));
-    Serial.print(config.networkSSID);
+    Serial.print(F("Attempting to connect to ")); Serial.print(config.networkSSID);
     if (verboseLogging) {
-      Serial.print(F(" using password "));
-      Serial.print(config.wifiPassword);
+      Serial.print(F(" using password ")); Serial.print(config.wifiPassword);
     }
   }
 
@@ -232,13 +280,72 @@ void setup() {
   subnetMask = WiFi.subnetMask();
   broadcastAddress = localIPAddress | (~subnetMask); // wonderful simplicity (http://stackoverflow.com/a/777631/259122)
 
-  if (debugLogging) {
-    Serial.print(F(" connected with IP address ")); Serial.print(localIPAddress); Serial.print(F(" netmask ")); Serial.print(subnetMask); Serial.print(F(" using broadcast address ")); Serial.println(broadcastAddress);
-  }
+  if (debugLogging) { Serial.print(F(" connected with IP address ")); Serial.print(localIPAddress); Serial.print(F(" netmask ")); Serial.print(subnetMask); Serial.print(F(" using broadcast address ")); Serial.println(broadcastAddress); }
 
   // setup the switch interrupt
   pinMode(SWITCH_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), switchActivated, RISING);
+
+  // at this point we have established a WiFi connection and initialised everything needed, so connect to Roastmaster and wait until the SYN/ACK has been completed...
+  DynamicJsonBuffer jsonSYNBuffer;
+  JsonObject& rdpHandshakeTransmission = jsonSYNBuffer.createObject();
+  rdpHandshakeTransmission[RDPKey_Version] = RDPValue_Version;
+  rdpHandshakeTransmission[RDPKey_Serial] = probeName;
+  rdpHandshakeTransmission[RDPKey_Epoch] = rdpEpoch++;
+  JsonArray& rdpPayload = rdpHandshakeTransmission.createNestedArray(RDPKey_Payload);
+  JsonObject& rdpSYN = rdpPayload.createNestedObject();
+  rdpSYN[RDPKey_EventType] = (int)RDPEventType_SYN;
+
+  int synTransmissionLength = rdpHandshakeTransmission.measureLength();
+  String synTransmissionString;
+  byte synTransmissionBytes[synTransmissionLength + 1];
+  rdpHandshakeTransmission.printTo(synTransmissionString);
+  synTransmissionString.getBytes(synTransmissionBytes, synTransmissionLength + 1);
+
+  if (debugLogging) { Serial.print(F("RDP SYN object (")); Serial.print(synTransmissionLength); Serial.print(F(" bytes): ")); rdpHandshakeTransmission.prettyPrintTo(Serial); Serial.println(); }
+
+  // start listening before transmission as there is a good chance the iPad will be much faster than the ESP8266...
+  rdpUdp.begin(rdpRemotePort);
+  rdpUdp.beginPacketMulticast(rdpMulticastAddress, rdpRemotePort, localIPAddress);
+  rdpUdp.write(synTransmissionBytes, synTransmissionLength);
+  rdpUdp.endPacket();
+
+  // loop, reusing connectDelay (for rdpMaxAckListenAttempts times) until an ACK has been received from Roastmaster
+  connectDelay = 5;
+  int rdpAckRetries = 0;
+  while (rdpAckRetries <= rdpMaxAckListenAttempts) {
+    int packetSize = rdpUdp.parsePacket();
+    if (packetSize) {
+      // we have data, confirm the ACK
+      rdpIPAddress = rdpUdp.remoteIP();
+      char rdpAckPacketBuffer[packetSize];
+      rdpUdp.read(rdpAckPacketBuffer, packetSize);
+
+      DynamicJsonBuffer jsonACKBuffer;
+      JsonObject& rdpAckJsonResponse = jsonACKBuffer.parseObject(rdpAckPacketBuffer);
+      if (rdpAckJsonResponse.success()) {
+        if (debugLogging) { Serial.print(F("Received datagram from ")); Serial.print(rdpIPAddress); Serial.print(F(" [")); rdpAckJsonResponse.printTo(Serial); Serial.print(F("] length=")); Serial.println(packetSize); }
+
+        // extract the event type (an array) which must match RDPEventType_ACK to be valid
+        int rdpAckEventType = rdpAckJsonResponse[RDPKey_Payload][0][RDPKey_EventType].as<unsigned int>();
+        if (rdpAckEventType == (int)RDPEventType_ACK) {
+          gotRDPServer = true;
+          if (debugLogging) { Serial.print(F("Received ACK from Roastmaster, will broadcast to ")); Serial.print(rdpIPAddress); Serial.print(F(":")); Serial.println(rdpRemotePort); }
+        } else {
+          if (debugLogging) { Serial.print(F("Datagram is valid JSON, but does not match a valid Roastmaster ACK response. Will therefore not broadcast to ")); Serial.println(rdpIPAddress); }
+        }
+      } else {
+        if (debugLogging) { Serial.print(F("Failed to parse UDP datagram as valid JSON! Response: ")); Serial.println(rdpAckPacketBuffer); }
+      }
+      break; // all done :)
+
+    } else {
+      if (debugLogging && verboseLogging) { Serial.print(F("No ACK received, pausing for delay: ")); Serial.println(connectDelay); }
+      delay(connectDelay);
+      connectDelay += connectDelay;
+      rdpAckRetries++;
+    }
+  }
 
   #ifdef STATUS_LED
     flashLED(STATUS_LED, 5); // visually indicate end of setup...
@@ -248,9 +355,7 @@ void setup() {
 
 // nice and simple :)
 void loop() {
-  if (debugLogging && verboseLogging) {
-    Serial.print(F("shouldReadProbes is ")); Serial.print(shouldReadProbes); Serial.print(F(", shouldBroadcast is ")); Serial.print(shouldBroadcast); Serial.print(F(" and haveBroadcastSinceRead is ")); Serial.println(haveBroadcastSinceRead);
-  }
+  if (debugLogging && verboseLogging) { Serial.print(F("shouldReadProbes is ")); Serial.print(shouldReadProbes); Serial.print(F(", shouldBroadcast is ")); Serial.print(shouldBroadcast); Serial.print(F(" and haveBroadcastSinceRead is ")); Serial.println(haveBroadcastSinceRead); }
 
   if ((millis() - detachedAt) > reattachmentDelay) {
     if (shouldReadProbes) {
@@ -307,16 +412,7 @@ void readProbes() {
     maximumInternal = internalTemperature;
   }
 
-  if (debugLogging) {
-    Serial.print(F("Internal temperature is "));
-    Serial.print(internalTemperature);
-    Serial.print(F("°C and the probe is reading (linearised) "));
-    Serial.print(temperatureCelsius);
-    Serial.print(F("°C ("));
-    Serial.print(lineariseTemperature(internalTemperature, temperatureCelsius));
-    Serial.print(F("°C) and readError is: "));
-    Serial.println(thermocouple.readError());
-  }
+  if (debugLogging) { Serial.print(F("Internal temperature is ")); Serial.print(internalTemperature); Serial.print(F("°C and the probe is reading (linearised) ")); Serial.print(temperatureCelsius); Serial.print(F("°C (")); Serial.print(lineariseTemperature(internalTemperature, temperatureCelsius)); Serial.print(F("°C) and readError is: ")); Serial.println(thermocouple.readError()); }
 
   // some basic protection logic just in case the broadcast hasn't happened in a timely manner...
   if (rollingAveragePosition >= ROLLING_AVERAGE_COUNT) {
@@ -339,9 +435,7 @@ void broadcastReadings() {
 
   // if there was a problem reading the probes or there is no data to broadcast, alert and return
   if ((rollingAveragePosition == 0 && !indexRolledOver) || probeReadingError) {
-    if (debugLogging) {
-      Serial.print(F("Not going to broadcast readings, rollingAveragePosition is ")); Serial.print(rollingAveragePosition); Serial.print(F(" and probeReadingError is ")); Serial.println(probeReadingError);
-    }
+    if (debugLogging) { Serial.print(F("Not going to broadcast readings, rollingAveragePosition is ")); Serial.print(rollingAveragePosition); Serial.print(F(" and probeReadingError is ")); Serial.println(probeReadingError); }
     #ifdef ERROR_LED
       flashLED(ERROR_LED, 3);
     #endif
@@ -370,21 +464,33 @@ void broadcastReadings() {
   String broadcastMessage = formatBroadcastMessage(broadcastTemperatureC); //, broadcastTemperatureF);
   byte broadcastBytes[broadcastMessage.length() + 1];
   broadcastMessage.getBytes(broadcastBytes, broadcastMessage.length() + 1);
+
+  String roastmasterMessage = formatRoastmasterDatagramProtocolMessage(broadcastTemperatureC);
+  byte roastmasterBroadcastBytes[roastmasterMessage.length() + 1];
+  roastmasterMessage.getBytes(roastmasterBroadcastBytes, roastmasterMessage.length() + 1);
+  
   if (debugLogging && verboseLogging) {
-    Serial.print(F("minimumInternal=")); Serial.println(minimumInternal);
-    Serial.print(F("maximumInternal=")); Serial.println(maximumInternal);
+    Serial.print(F("minimumInternal=")); Serial.println(minimumInternal); Serial.print(F("maximumInternal=")); Serial.println(maximumInternal);
     Serial.printf("Broadcast [%s] to UDP port %d via ", broadcastBytes, udpRemotePort); Serial.println(broadcastAddress);
+    if (gotRDPServer) {
+      Serial.printf("Broadcast [%s] to RDP port %d via ", roastmasterBroadcastBytes, rdpRemotePort); Serial.println(rdpIPAddress);
+    }
   }
 
   // check the WiFi connection, then send the datagram
   if (WiFi.status() == WL_CONNECTED) {
     if (debugLogging) { Serial.println(F("Broadcasting...")); }
 
-    if (udp.beginPacket(broadcastAddress, udpRemotePort) == 1) {
+    // the gotRDPServer test is first to ensure that the beginPacket isn't triggered on false...
+    if (udp.beginPacket(broadcastAddress, udpRemotePort) == 1 && (gotRDPServer && rdpUdp.beginPacket(rdpIPAddress, rdpRemotePort) == 1)) {
 //    if (udp.beginPacketMulticast(multicastAddress, udpRemotePort, WiFi.localIP()) == 1) {
       udp.write(broadcastBytes, broadcastMessage.length() + 0);
-      if (udp.endPacket() != 1) {
-        if (debugLogging) { Serial.print(F("ERROR! UDP broadcast failed!")); }
+      rdpUdp.write(roastmasterBroadcastBytes, roastmasterMessage.length() + 0);
+
+      byte udpEndPacket = udp.endPacket();
+      byte rdpEndPacket = rdpUdp.endPacket();
+      if (udpEndPacket != 1 || rdpEndPacket != 1) {
+        if (debugLogging) { Serial.printf("ERROR! UDP broadcast failed! (%d:%d)", udpEndPacket, rdpEndPacket); }
         #ifdef ERROR_LED
           flashLED(ERROR_LED, 3);
         #endif
@@ -463,9 +569,7 @@ String formatBroadcastMessage(double broadcastTemperatureC) {
     debugData["PROBE_RATE"] = PROBE_RATE;
     debugData["probeReadingErrorCount"] = probeReadingErrorCount;
     debugData["chipId"] = ESP.getChipId();
-    Serial.print(F("JSON Object: "));
-    jsonResponse.prettyPrintTo(Serial);
-    Serial.println();
+    Serial.print(F("JSON Object: ")); jsonResponse.prettyPrintTo(Serial); Serial.println();
   }
 
   String broadcastData;
@@ -473,6 +577,30 @@ String formatBroadcastMessage(double broadcastTemperatureC) {
   return broadcastData;
 }
 
+// see https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs
+String formatRoastmasterDatagramProtocolMessage(double broadcastTemperatureC) {
+  DynamicJsonBuffer jsonTemperatureBuffer;
+  JsonObject& rdpTemperatureTransmission = jsonTemperatureBuffer.createObject();
+  rdpTemperatureTransmission[RDPKey_Version] = RDPValue_Version;
+  rdpTemperatureTransmission[RDPKey_Serial] = probeName;
+  rdpTemperatureTransmission[RDPKey_Epoch] = rdpEpoch++;
+  JsonArray& rdpPayload = rdpTemperatureTransmission.createNestedArray(RDPKey_Payload);
+  JsonObject& rdpReading = rdpPayload.createNestedObject();
+  rdpReading[RDPKey_Channel] = 1;
+  rdpReading[RDPKey_EventType] = (int)RDPEventType_Temperature;
+  rdpReading[RDPKey_Value] = double_with_n_digits(broadcastTemperatureC, 2);
+  rdpReading[RDPKey_Meta] = (int)RDPMetaType_BTTemp;
+
+  if (debugLogging) {
+    Serial.print(F("JSON Object: "));
+    rdpTemperatureTransmission.prettyPrintTo(Serial);
+    Serial.println();
+  }
+
+  String broadcastData;
+  rdpTemperatureTransmission.printTo(broadcastData);
+  return broadcastData;
+}
 /* interrupt handler, to be kept to the bare minimum
    the logic is simple, if the switch is 'on' then read the probes, when it goes off, broadcast the readings
  */
