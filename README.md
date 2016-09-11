@@ -13,7 +13,7 @@ This stuff really is amazing, when I think how big the 300 baud modems I used to
 
 # Usage
 - set the probeName, WiFi and UDP broadcast port settings
-- ensure a UDP trigger is active, such as HallEffectBroadcast.ino
+- ensure a UDP trigger is active, such as [HallEffectBroadcast.ino](https://github.com/rswift/wifi-temperature-broadcast/blob/master/HallEffectBroadcast/HallEffectBroadcast.ino)
 - ensure the MAX31855 pins are assigned correctly
 - tinker with the poll rates, debug/verbose and baud rate values as you prefer
 - flash the ESP8266
