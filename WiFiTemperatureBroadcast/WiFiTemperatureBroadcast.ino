@@ -15,9 +15,10 @@
  * remote support for customers around the globe, to be able to get this much capability
  * into a matchbox is phenomenal :)
  * 
- * This code is issued under the "Bill and Ted - be excellent to each other" licence (which
- * has no content, just, well, be excellent to each other), however, I have included the licence
- * files from my original starting file (serialthermocouple.ino) at the bottom of this sketch...
+ * I've decided to adopt the MIT licence for this project, I'd originally included the licence from
+ * the starting Adafruit example (serialthermocouple.ino), so that is retained in this source code,
+ * however, the text didn't sit right so I've clarified it. None of that alters the fact that 
+ * credit must go to the Adafruit team for their efforts and examples.
  * 
  * Danny from Roastmaster provides an example application on his Github page, and as of August 2016
  * his software is still at the pre-release stage so is potentially subject to change. Also note
@@ -25,23 +26,16 @@
  * 
  * Usage:
  *  - set the probeName, WiFi and UDP broadcast port settings
+ *  - ensure a UDP trigger is active, such as HallEffectBroadcast.ino
  *  - ensure the MAX31855 pins are assigned correctly
  *  - tinker with the poll rates, debug/verbose and baud rate values as you prefer
  *  - flash the ESP8266
  *  - monitor your network for UDP datagrams sent to the port specified by udpRemotePort
  *  - and/or consume the datagram in a suitable application
  * 
- * ToDo:
- *  - remove hardware tilt switch trigger as this is not sufficiently accurate, replace
- *    with hall effect switch and a WiFi triggered command
- *  - build a small server element into the code to receive instructions (broadcast now,
- *    configuration etc.)
- *  - test on other boards
- *  - simplify the code, maybe separate out although it is handy having it all in a
- *    single file (to a point!)
- * 
  * Some links:
  *  - Roastmaster Datagram Protocol: https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs
+ *  - Hall Effect based trigger: https://github.com/rswift/wifi-temperature-broadcast/wiki/External-Trigger-(Hall-Effect-Sensor)
  *  
  *  - Roasthacker: http://roasthacker.com/?p=529 & http://roasthacker.com/?p=552
  *  - Adafruit ESP8266: https://www.adafruit.com/products/2471
@@ -49,25 +43,18 @@
  *  - Using a thermocouple: https://learn.adafruit.com/thermocouple/using-a-thermocouple
  *  - Calibration: https://learn.adafruit.com/calibrating-sensors/maxim-31855-linearization
  *  - TCP dump or Wireshark for packet capture: http://www.tcpdump.org/tcpdump_man.html or https://www.wireshark.org/
- *  - Timer: http://www.switchdoc.com/2015/10/iot-esp8266-timer-tutorial-arduino-ide/
- *  
- *  Robert Swift - August 2016.
+ *
+ *  Robert Swift - September 2016.
  */
 
 #include <Arduino.h>
 #include <EEPROM.h>
-#include <float.h> // provides min/max double values
-
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiUdp.h>
-
+#include <float.h> // provides min/max double values
 #include "Adafruit_MAX31855.h"
 #include <ArduinoJson.h>
-
-extern "C" {
-#include "user_interface.h" // needed for the timer
-}
 
 // disabled by default, but can be overridden via EEPROM and in the future, via the web server...
 bool debugLogging = false;
@@ -80,9 +67,10 @@ const unsigned int baudRate = 115200;
 #define STARTUP_DELAY 1500
 
 // Set the WiFi and network details
-IPAddress localIPAddress, rdpIPAddress, subnetMask, multicastAddress(239,31,8,55), rdpMulticastAddress(224,0,0,1), broadcastAddress;
+IPAddress localIPAddress, rdpIPAddress, subnetMask, multicastAddress(239,31,8,55), rdpMulticastAddress(224,0,0,1), cncMulticastAddress(239,9,80,1), broadcastAddress;
 word udpRemotePort = 31855; // for my own needs
 word rdpRemotePort = 5050;  // for Roastmaster
+word cncPort = 9801;
 
 // a check for EEPROM health and a simple struct to make reading/writing easier
 const byte eepromComparison = B10101010;
@@ -92,7 +80,7 @@ struct eeprom_config {
   char networkSSID[WL_SSID_MAX_LENGTH] = "SSID";
   char wifiPassword[WL_WPA_KEY_MAX_LENGTH] = "PASSWORD";
   bool debugEnabled = true;
-  bool verboseEnabled = true;
+  bool verboseEnabled = false;
 };
 
 // Define the pin mapping from the MAX31855 interface to the microcontroller (https://learn.adafruit.com/thermocouple/using-a-thermocouple)
@@ -104,9 +92,6 @@ struct eeprom_config {
 #define STATUS_LED 12  // blue
 #define ERROR_LED 13   // red - unlucky for some...
 #define READING_LED 14 // green
-
-// the pin to interrupt on
-#define SWITCH_PIN 0 // probably a bad choice, but I'm a bit stuck unless I de-sugru the whole thing and start again...
 
 /* Set the various timers and allocate some storage; the goal is to have sufficient to store readings for
  * BROADCAST_RATE_SECONDS seconds, so add a bit just in case the broadcast poll takes longer to trigger than
@@ -125,9 +110,10 @@ double maximumInternal = DBL_MIN;
 // initialise the thermocouple
 Adafruit_MAX31855 thermocouple(CLK, CS, DO);
 
-// initialise the UDP objects, one for command & control, the other for Roastmaster
-WiFiUDP udp;
+// initialise the UDP objects (command & control, broadcast and Roastmaster)
+WiFiUDP brdUdp;
 WiFiUDP rdpUdp;
+WiFiUDP cncUdp;
 
 // track any problems reading the temperatures
 bool probeReadingError = false;
@@ -282,10 +268,6 @@ void setup() {
 
   if (debugLogging) { Serial.print(F(" connected with IP address ")); Serial.print(localIPAddress); Serial.print(F(" netmask ")); Serial.print(subnetMask); Serial.print(F(" using broadcast address ")); Serial.println(broadcastAddress); }
 
-  // setup the switch interrupt
-  pinMode(SWITCH_PIN, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), switchActivated, RISING);
-
   // at this point we have established a WiFi connection and initialised everything needed, so connect to Roastmaster and wait until the SYN/ACK has been completed...
   DynamicJsonBuffer jsonSYNBuffer;
   JsonObject& rdpHandshakeTransmission = jsonSYNBuffer.createObject();
@@ -346,6 +328,10 @@ void setup() {
       rdpAckRetries++;
     }
   }
+  if (!gotRDPServer && debugLogging) { Serial.print(F("No RDP Server found...")); }
+
+  // configure the Command & Control UDP listener
+  cncUdp.beginMulticast(WiFi.localIP(), cncMulticastAddress, cncPort);
 
   #ifdef STATUS_LED
     flashLED(STATUS_LED, 5); // visually indicate end of setup...
@@ -353,18 +339,39 @@ void setup() {
 
 }
 
-// nice and simple :)
+/*
+ *  The main loop is loosely based on the tilt switch hardware interrupt, except this version checks for an incoming UDP packet
+ *  as the trigger for the same thing. This will be expanded at some point to allow things like debug/verbose logging to be remotely
+ *  activated etc. but the goal is to keep it as slim as possible...
+ */
 void loop() {
   if (debugLogging && verboseLogging) { Serial.print(F("shouldReadProbes is ")); Serial.print(shouldReadProbes); Serial.print(F(", shouldBroadcast is ")); Serial.print(shouldBroadcast); Serial.print(F(" and haveBroadcastSinceRead is ")); Serial.println(haveBroadcastSinceRead); }
 
-  if ((millis() - detachedAt) > reattachmentDelay) {
-    if (shouldReadProbes) {
-      attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), switchDeactivated, FALLING);
-    } else {
-      attachInterrupt(digitalPinToInterrupt(SWITCH_PIN), switchActivated, RISING);
-    }
-  }
+  int cncPacketLength = cncUdp.parsePacket();
+  if (cncPacketLength > 0) {
+    // Command & Control packet received
+    char cncPacket[cncPacketLength + 1];
+    memset(cncPacket, 0, cncPacketLength + 1);
+    cncUdp.read(cncPacket, cncPacketLength);
+    if (debugLogging) { Serial.print(cncPacketLength); Serial.print(F(" Command & Control bytes received via ")); Serial.print(cncUdp.destinationIP()); Serial.print(F(": ")); Serial.println(cncPacket); }
 
+    DynamicJsonBuffer jsonBuffer;
+    JsonObject& cncJson = jsonBuffer.parseObject(cncPacket);
+    String cncCommand = cncJson["command"].as<String>();
+//    String cncContext = cncJson["context"].as<String>();
+    if (cncCommand == "readProbes") { // somewhat clumsy, but it'll do for the time being
+      // switch 'activated', start reading temperatures
+      shouldReadProbes = true;
+      shouldBroadcast = false;
+      haveBroadcastSinceRead = false;
+    } else if (cncCommand == "broadcastReadings") {
+      // switch 'deactivated', so broadcast readings  
+      shouldReadProbes = false;
+      shouldBroadcast = true;
+    }
+    cncUdp.flush();
+  }
+  
   // prioritise broadcast over reading the probes
   if (shouldBroadcast && !haveBroadcastSinceRead) {
     broadcastReadings();
@@ -481,13 +488,13 @@ void broadcastReadings() {
   if (WiFi.status() == WL_CONNECTED) {
     if (debugLogging) { Serial.println(F("Broadcasting...")); }
 
-    // the gotRDPServer test is first to ensure that the beginPacket isn't triggered on false...
-    if (udp.beginPacket(broadcastAddress, udpRemotePort) == 1 && (gotRDPServer && rdpUdp.beginPacket(rdpIPAddress, rdpRemotePort) == 1)) {
-//    if (udp.beginPacketMulticast(multicastAddress, udpRemotePort, WiFi.localIP()) == 1) {
-      udp.write(broadcastBytes, broadcastMessage.length() + 0);
+     // the gotRDPServer test is first to ensure that the beginPacket isn't triggered on false...
+    if (brdUdp.beginPacket(broadcastAddress, udpRemotePort) == 1 && (gotRDPServer && rdpUdp.beginPacket(rdpIPAddress, rdpRemotePort) == 1)) {
+//    if (brdUdp.beginPacketMulticast(multicastAddress, udpRemotePort, WiFi.localIP()) == 1) {
+      brdUdp.write(broadcastBytes, broadcastMessage.length() + 0);
       rdpUdp.write(roastmasterBroadcastBytes, roastmasterMessage.length() + 0);
 
-      byte udpEndPacket = udp.endPacket();
+      byte udpEndPacket = brdUdp.endPacket();
       byte rdpEndPacket = rdpUdp.endPacket();
       if (udpEndPacket != 1 || rdpEndPacket != 1) {
         if (debugLogging) { Serial.printf("ERROR! UDP broadcast failed! (%d:%d)", udpEndPacket, rdpEndPacket); }
@@ -601,24 +608,6 @@ String formatRoastmasterDatagramProtocolMessage(double broadcastTemperatureC) {
   rdpTemperatureTransmission.printTo(broadcastData);
   return broadcastData;
 }
-/* interrupt handler, to be kept to the bare minimum
-   the logic is simple, if the switch is 'on' then read the probes, when it goes off, broadcast the readings
- */
-void switchActivated() {
-  // switch has gone on, start reading and do not broadcast
-  shouldReadProbes = true;
-  shouldBroadcast = false;
-  haveBroadcastSinceRead = false;
-  detachInterrupt(digitalPinToInterrupt(SWITCH_PIN));
-  detachedAt = millis();
-}
-
-void switchDeactivated() {
-  shouldReadProbes = false;
-  shouldBroadcast = true;
-  detachInterrupt(digitalPinToInterrupt(SWITCH_PIN));
-  detachedAt = millis();
-}
 
 /* 
  * Function pinched directly from the Adafruit forum http://forums.adafruit.com/viewtopic.php?f=19&t=32086 
@@ -724,7 +713,7 @@ double lineariseTemperature(double coldJunctionCelsiusTemperatureReading, double
 }
 
 /*************************************************** 
-  This is an example for the Adafruit Thermocouple Sensor w/MAX31855K
+  This is built on the Adafruit Thermocouple Sensor w/MAX31855K example
 
   Designed specifically to work with the Adafruit Thermocouple Sensor
   ----> https://www.adafruit.com/products/269
