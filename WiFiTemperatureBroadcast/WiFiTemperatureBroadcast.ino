@@ -74,7 +74,6 @@ word cncPort = 9801;
 
 // a check for EEPROM health and a simple struct to make reading/writing easier
 const byte eepromComparison = B10101010;
-
 struct eeprom_config {
   byte healthBight = !eepromComparison;
   char networkSSID[WL_SSID_MAX_LENGTH] = "SSID";
@@ -82,11 +81,6 @@ struct eeprom_config {
   bool debugEnabled = true;
   bool verboseEnabled = false;
 };
-
-// Define the pin mapping from the MAX31855 interface to the microcontroller (https://learn.adafruit.com/thermocouple/using-a-thermocouple)
-#define DO 2  // DO (data out) is an output from the MAX31855 (input to the microcontroller) which carries each bit of data
-#define CS 4  // CS (chip select) is an input to the MAX31855 (output from the microcontroller) and tells the chip when its time to read the thermocouple and output more data
-#define CLK 5 // CLK (clock) is an input to the MAX31855 (output from microcontroller) to indicate when to present another bit of data
 
 // error and status reporting LED's, comment out to disable the illumination a given LED
 #define STATUS_LED 12  // blue
@@ -107,7 +101,10 @@ bool indexRolledOver = false; // this will allow broadcastReadings() to know if 
 double minimumInternal = DBL_MAX;
 double maximumInternal = DBL_MIN;
 
-// initialise the thermocouple
+// Define the pin mapping from the MAX31855 interface to the microcontroller (https://learn.adafruit.com/thermocouple/using-a-thermocouple)
+#define DO 2  // DO (data out) is an output from the MAX31855 (input to the microcontroller) which carries each bit of data
+#define CS 4  // CS (chip select) is an input to the MAX31855 (output from the microcontroller) and tells the chip when its time to read the thermocouple and output more data
+#define CLK 5 // CLK (clock) is an input to the MAX31855 (output from microcontroller) to indicate when to present another bit of data
 Adafruit_MAX31855 thermocouple(CLK, CS, DO);
 
 // initialise the UDP objects (command & control, broadcast and Roastmaster)
@@ -132,8 +129,6 @@ bool gotRDPServer = false;
 volatile bool shouldReadProbes = false;
 volatile bool shouldBroadcast = false;
 volatile bool haveBroadcastSinceRead = false;
-volatile unsigned long detachedAt = 0;          // essentially a debouncer, need to ensure that at least a given period of time has passed before setting a new interrupt
-const unsigned long reattachmentDelay = 2000;  // set at two seconds, drum takes about seven to rotate fully so this should be enough time to allow the switch to settle
 
 // set the reference for battery monitoring
 ADC_MODE(ADC_VCC);
@@ -385,331 +380,6 @@ void loop() {
 
   // timer handling states that yield() or a delay() should be called, no point in hammering the CPU so we'll delay a bit
   delay(50);
-}
-
-void readProbes() {
-  
-  double internalTemperature = thermocouple.readInternal();
-  double temperatureCelsius = thermocouple.readCelsius();
-
-  // if the sensor can't be read correctly, wait for a cycle and try again
-  #ifdef ERROR_LED
-    digitalWrite(ERROR_LED, LOW); // turn off the LED
-  #endif
-  if (isnan(internalTemperature) || isnan(temperatureCelsius)) {
-    probeReadingError = true;
-    probeReadingErrorCount++;
-    if (debugLogging) { Serial.println("Something is wrong with thermocouple! Is it grounded?"); }
-    #ifdef ERROR_LED
-      digitalWrite(ERROR_LED, HIGH); // turn on the error indication LED
-    #endif
-    return; 
-  } else {
-      probeReadingError = false;
-      #ifdef READING_LED
-        flashLED(READING_LED, 1);
-    #endif
-  }
-
-  // track minimum and maximum
-  if (internalTemperature < minimumInternal) {
-    minimumInternal = internalTemperature;
-  }
-  if (internalTemperature > maximumInternal) {
-    maximumInternal = internalTemperature;
-  }
-
-  if (debugLogging) { Serial.print(F("Internal temperature is ")); Serial.print(internalTemperature); Serial.print(F("°C and the probe is reading (linearised) ")); Serial.print(temperatureCelsius); Serial.print(F("°C (")); Serial.print(lineariseTemperature(internalTemperature, temperatureCelsius)); Serial.print(F("°C) and readError is: ")); Serial.println(thermocouple.readError()); }
-
-  // some basic protection logic just in case the broadcast hasn't happened in a timely manner...
-  if (rollingAveragePosition >= ROLLING_AVERAGE_COUNT) {
-    if (debugLogging) { Serial.println("ERROR! resetting rolling average index to zero - broadcast can't have happened at the correct time"); }
-    rollingAveragePosition = 0;
-    indexRolledOver = true;
-  }
-
-  // write the temperature data values to the rolling average array
-  celsiusRollingAverage[rollingAveragePosition] = lineariseTemperature(internalTemperature, temperatureCelsius);
-
-  if (debugLogging && verboseLogging) { Serial.print("Setting celsiusRollingAverage["); Serial.print(rollingAveragePosition); Serial.print("]="); Serial.println(celsiusRollingAverage[rollingAveragePosition]); }
-
-  // update the array offset for the next capture before looping again
-  rollingAveragePosition++;
-
-}
-
-void broadcastReadings() {
-
-  // if there was a problem reading the probes or there is no data to broadcast, alert and return
-  if ((rollingAveragePosition == 0 && !indexRolledOver) || probeReadingError) {
-    if (debugLogging) { Serial.print(F("Not going to broadcast readings, rollingAveragePosition is ")); Serial.print(rollingAveragePosition); Serial.print(F(" and probeReadingError is ")); Serial.println(probeReadingError); }
-    #ifdef ERROR_LED
-      flashLED(ERROR_LED, 3);
-    #endif
-    return;
-  }
-
-  // calculate the rolling average and broadcast it to anyone who cares to listen...
-  double broadcastTemperatureC = 0.0;
-  double broadcastTemperatureF = 0.0;
-
-  // determine how much of the array to read
-  int endOfIndex = rollingAveragePosition;
-  if (indexRolledOver) {
-    // fabulous, read the whole thing
-    endOfIndex = ROLLING_AVERAGE_COUNT;
-  }
-
-  for (int i = 0; i < endOfIndex; i++) {
-    if (debugLogging && verboseLogging) { Serial.printf("Reading celsiusRollingAverage[%d]=", i); Serial.println(celsiusRollingAverage[i]); }
-    broadcastTemperatureC += celsiusRollingAverage[i];
-  }
-
-  broadcastTemperatureC = broadcastTemperatureC / ((double)endOfIndex); // adding 0.0 forces the int to be cast, probably a crappy way of doing it...
-  broadcastTemperatureF = (broadcastTemperatureC * (9.0/5.0)) + 32.0;
-
-  String broadcastMessage = formatBroadcastMessage(broadcastTemperatureC); //, broadcastTemperatureF);
-  byte broadcastBytes[broadcastMessage.length() + 1];
-  broadcastMessage.getBytes(broadcastBytes, broadcastMessage.length() + 1);
-
-  String roastmasterMessage = formatRoastmasterDatagramProtocolMessage(broadcastTemperatureC);
-  byte roastmasterBroadcastBytes[roastmasterMessage.length() + 1];
-  roastmasterMessage.getBytes(roastmasterBroadcastBytes, roastmasterMessage.length() + 1);
-  
-  if (debugLogging && verboseLogging) {
-    Serial.print(F("minimumInternal=")); Serial.println(minimumInternal); Serial.print(F("maximumInternal=")); Serial.println(maximumInternal);
-    Serial.printf("Broadcast [%s] to UDP port %d via ", broadcastBytes, udpRemotePort); Serial.println(broadcastAddress);
-    if (gotRDPServer) {
-      Serial.printf("Broadcast [%s] to RDP port %d via ", roastmasterBroadcastBytes, rdpRemotePort); Serial.println(rdpIPAddress);
-    }
-  }
-
-  // check the WiFi connection, then send the datagram
-  if (WiFi.status() == WL_CONNECTED) {
-    if (debugLogging) { Serial.println(F("Broadcasting...")); }
-
-     // the gotRDPServer test is first to ensure that the beginPacket isn't triggered on false...
-    if (brdUdp.beginPacket(broadcastAddress, udpRemotePort) == 1 && (gotRDPServer && rdpUdp.beginPacket(rdpIPAddress, rdpRemotePort) == 1)) {
-//    if (brdUdp.beginPacketMulticast(multicastAddress, udpRemotePort, WiFi.localIP()) == 1) {
-      brdUdp.write(broadcastBytes, broadcastMessage.length() + 0);
-      rdpUdp.write(roastmasterBroadcastBytes, roastmasterMessage.length() + 0);
-
-      byte udpEndPacket = brdUdp.endPacket();
-      byte rdpEndPacket = rdpUdp.endPacket();
-      if (udpEndPacket != 1 || rdpEndPacket != 1) {
-        if (debugLogging) { Serial.printf("ERROR! UDP broadcast failed! (%d:%d)", udpEndPacket, rdpEndPacket); }
-        #ifdef ERROR_LED
-          flashLED(ERROR_LED, 3);
-        #endif
-      #ifdef STATUS_LED
-      } else {
-        flashLED(STATUS_LED, 1);
-      #endif
-      }
-    } else {
-      if (debugLogging) { Serial.print(F("ERROR! UDP broadcast setup failed!")); }
-      #ifdef ERROR_LED
-        flashLED(ERROR_LED, 3);
-      #endif
-    }
-  } else {
-    // a problem occurred! need to implement something better to advertise the fact...
-    if (debugLogging) {
-      Serial.print(F("ERROR! WiFi status showing as not connected: "));
-      Serial.println(WiFi.status());
-    }
-    #ifdef ERROR_LED
-      flashLED(ERROR_LED, 5);
-    #endif
-  }
-
-  // reset the fields for readProbes()
-  rollingAveragePosition = 0;
-  indexRolledOver = false;
-}
-
-#if defined(ERROR_LED) || defined(STATUS_LED) || defined(READING_LED) // minimise the code where possible
-// does this need to be explained? hopefully not...
-void flashLED(int ledToFlash, int flashCount) {
-  do {
-    if (flashCount > 0) {
-      delay(123);
-    }
-    digitalWrite(ledToFlash, HIGH);
-    delay(123);
-    digitalWrite(ledToFlash, LOW);
-  } while (--flashCount > 0);
-}
-#endif
-
-// Trivial function to format the data to broadcast to listners...
-String formatBroadcastMessage(double broadcastTemperatureC) {
-  // possibly slower, but the overhead isn't a major concern in relation to the benefit
-  // https://github.com/bblanchon/ArduinoJson/wiki/FAQ#what-are-the-differences-between-staticjsonbuffer-and-dynamicjsonbuffer
-  DynamicJsonBuffer jsonBuffer;
-  JsonObject& jsonResponse = jsonBuffer.createObject();
-
-  JsonArray& readings = jsonResponse.createNestedArray("readings");
-  JsonObject& reading = readings.createNestedObject();
-  reading["reading"] = double_with_n_digits(broadcastTemperatureC, 2);
-  reading["scale"] = "C";
-  reading["probeName"] = probeName;
-  reading["probeType"] = probeType;
-  reading["probeSubType"] = temperatureProbeType;
-
-  JsonObject& systemInformation = jsonResponse.createNestedObject("systemInformation");
-  systemInformation["VCC"] = double_with_n_digits((ESP.getVcc() / 1024.0), 3);
-
-  if (debugLogging) {
-    JsonObject& debugData = jsonResponse.createNestedObject("debugData");
-    debugData["minimumInternal"] = double_with_n_digits(minimumInternal, 3);
-    debugData["maximumInternal"] = double_with_n_digits(maximumInternal, 3);
-    debugData["indexRolledOver"] = indexRolledOver;
-    debugData["rollingAveragePosition"] = rollingAveragePosition;
-    int celsiusRollingAverageSize = sizeof(celsiusRollingAverage) / sizeof(celsiusRollingAverage[0]);
-    debugData["celsiusRollingAverageSize"] = celsiusRollingAverageSize;
-    JsonArray& rawCelsiusReadingValues = debugData.createNestedArray("rawCelsiusReadingValues");
-    for (int i = 0; i < celsiusRollingAverageSize; i++) {
-      rawCelsiusReadingValues.add(celsiusRollingAverage[i]);
-    }
-    debugData["DRUM_ROTATION_SPEED"] = DRUM_ROTATION_SPEED;
-    debugData["PROBE_RATE"] = PROBE_RATE;
-    debugData["probeReadingErrorCount"] = probeReadingErrorCount;
-    debugData["chipId"] = ESP.getChipId();
-    Serial.print(F("JSON Object: ")); jsonResponse.prettyPrintTo(Serial); Serial.println();
-  }
-
-  String broadcastData;
-  jsonResponse.printTo(broadcastData);
-  return broadcastData;
-}
-
-// see https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs
-String formatRoastmasterDatagramProtocolMessage(double broadcastTemperatureC) {
-  DynamicJsonBuffer jsonTemperatureBuffer;
-  JsonObject& rdpTemperatureTransmission = jsonTemperatureBuffer.createObject();
-  rdpTemperatureTransmission[RDPKey_Version] = RDPValue_Version;
-  rdpTemperatureTransmission[RDPKey_Serial] = probeName;
-  rdpTemperatureTransmission[RDPKey_Epoch] = rdpEpoch++;
-  JsonArray& rdpPayload = rdpTemperatureTransmission.createNestedArray(RDPKey_Payload);
-  JsonObject& rdpReading = rdpPayload.createNestedObject();
-  rdpReading[RDPKey_Channel] = 1;
-  rdpReading[RDPKey_EventType] = (int)RDPEventType_Temperature;
-  rdpReading[RDPKey_Value] = double_with_n_digits(broadcastTemperatureC, 2);
-  rdpReading[RDPKey_Meta] = (int)RDPMetaType_BTTemp;
-
-  if (debugLogging) {
-    Serial.print(F("JSON Object: "));
-    rdpTemperatureTransmission.prettyPrintTo(Serial);
-    Serial.println();
-  }
-
-  String broadcastData;
-  rdpTemperatureTransmission.printTo(broadcastData);
-  return broadcastData;
-}
-
-/* 
- * Function pinched directly from the Adafruit forum http://forums.adafruit.com/viewtopic.php?f=19&t=32086 
- * Note: there are corrections applied from the forum posts, and this has been tweaked to remove some
- * checks made elsewhere and take parameters and provide a return value:
- * 
- * - internalTemp is the coldJunctionCelsiusTemperatureReading parameter
- * - rawTemp is the externalCelsiusTemperatureReading parameter
- * - the linearised value is returned, to convert to fahrenheit do a basic (celsius*(9.0/5.0))+32.0 conversion
- * 
- */
-
-double lineariseTemperature(double coldJunctionCelsiusTemperatureReading, double externalCelsiusTemperatureReading) {
-
-  // Initialize variables.
-  int i = 0; // Counter for arrays
-  double thermocoupleVoltage= 0;
-  double internalVoltage = 0;
-  double correctedTemperature = 0;
-
-  // Steps 1 & 2. Subtract cold junction temperature from the raw thermocouple temperature.
-  thermocoupleVoltage = (externalCelsiusTemperatureReading - coldJunctionCelsiusTemperatureReading)*0.041276; // C * mv/C = mV
-
-  // Step 3. Calculate the cold junction equivalent thermocouple voltage.
-  if (coldJunctionCelsiusTemperatureReading >= 0) { // For positive temperatures use appropriate NIST coefficients
-    // Coefficients and equations available from http://srdata.nist.gov/its90/download/type_k.tab
-    double c[] = {-0.176004136860E-01,  0.389212049750E-01,  0.185587700320E-04, -0.994575928740E-07,  0.318409457190E-09, -0.560728448890E-12,  0.560750590590E-15, -0.320207200030E-18,  0.971511471520E-22, -0.121047212750E-25};
-
-    // Count the the number of coefficients. There are 10 coefficients for positive temperatures (plus three exponential coefficients),
-    // but there are 11 coefficients for negative temperatures.
-    int cLength = sizeof(c) / sizeof(c[0]);
-    
-    // Exponential coefficients. Only used for positive temperatures.
-    double a0 =  0.118597600000E+00;
-    double a1 = -0.118343200000E-03;
-    double a2 =  0.126968600000E+03;
-    
-    // From NIST: E = sum(i=0 to n) c_i t^i + a0 exp(a1 (t - a2)^2), where E is the thermocouple voltage in mV and t is the temperature in degrees C.
-    // In this case, E is the cold junction equivalent thermocouple voltage.
-    // Alternative form: C0 + C1*internalTemp + C2*internalTemp^2 + C3*internalTemp^3 + ... + C10*internaltemp^10 + A0*e^(A1*(internalTemp - A2)^2)
-    // This loop sums up the c_i t^i components.
-    for (i = 0; i < cLength; i++) {
-      internalVoltage += c[i] * pow(coldJunctionCelsiusTemperatureReading, i);
-    }
-
-    // This section adds the a0 exp(a1 (t - a2)^2) components.
-    internalVoltage += a0 * exp(a1 * pow((coldJunctionCelsiusTemperatureReading - a2), 2));
-
-  } else if (coldJunctionCelsiusTemperatureReading < 0) {
-    // for negative temperatures
-    double c[] = {0.000000000000E+00,  0.394501280250E-01,  0.236223735980E-04, -0.328589067840E-06, -0.499048287770E-08, -0.675090591730E-10, -0.574103274280E-12, -0.310888728940E-14, -0.104516093650E-16, -0.198892668780E-19, -0.163226974860E-22};
-
-    // Count the number of coefficients.
-    int cLength = sizeof(c) / sizeof(c[0]);
-    
-    // Below 0 degrees Celsius, the NIST formula is simpler and has no exponential components: E = sum(i=0 to n) c_i t^i
-    for (i = 0; i < cLength; i++) {
-      internalVoltage += c[i] * pow(coldJunctionCelsiusTemperatureReading, i) ;
-    }
-  }
-
-  // Step 4. Add the cold junction equivalent thermocouple voltage calculated in step 3 to the thermocouple voltage calculated in step 2.
-  double totalVoltage = thermocoupleVoltage + internalVoltage;
-  
-  // Step 5. Use the result of step 4 and the NIST voltage-to-temperature (inverse) coefficients to calculate the cold junction compensated, linearized temperature value.
-  // The equation is in the form correctedTemp = d_0 + d_1*E + d_2*E^2 + ... + d_n*E^n, where E is the totalVoltage in mV and correctedTemp is in degrees C.
-  // NIST uses different coefficients for different temperature subranges: (-200 to 0C), (0 to 500C) and (500 to 1372C).
-  if (totalVoltage < 0) { // Temperature is between -200 and 0C.
-     double d[] = {0.0000000E+00, 2.5173462E+01, -1.1662878E+00, -1.0833638E+00, -8.9773540E-01, -3.7342377E-01, -8.6632643E-02, -1.0450598E-02, -5.1920577E-04, 0.0000000E+00};
-  
-     int dLength = sizeof(d) / sizeof(d[0]);
-     for (i = 0; i < dLength; i++) {
-        correctedTemperature += d[i] * pow(totalVoltage, i);
-     }
-  }
-  else if (totalVoltage < 20.644) {
-    // Temperature is between 0C and 500C.
-    double d[] = {0.000000E+00, 2.508355E+01, 7.860106E-02, -2.503131E-01, 8.315270E-02, -1.228034E-02, 9.804036E-04, -4.413030E-05, 1.057734E-06, -1.052755E-08};
-    int dLength = sizeof(d) / sizeof(d[0]);
-    for (i = 0; i < dLength; i++) {
-      correctedTemperature += d[i] * pow(totalVoltage, i);
-    }
-  }
-  else if (totalVoltage < 54.886 ) {
-    // Temperature is between 500C and 1372C.
-    double d[] = {-1.318058E+02, 4.830222E+01, -1.646031E+00, 5.464731E-02, -9.650715E-04, 8.802193E-06, -3.110810E-08, 0.000000E+00, 0.000000E+00, 0.000000E+00};
-    int dLength = sizeof(d) / sizeof(d[0]);
-    for (i = 0; i < dLength; i++) {
-      correctedTemperature += d[i] * pow(totalVoltage, i);
-    }
-  } else {
-    // NIST only has data for K-type thermocouples from -200C to +1372C. If the temperature is not in that range, set temp to impossible value.
-    if (debugLogging && verboseLogging) {
-      Serial.println("Temperature is out of range, this should never happen!");
-    }
-    #ifdef ERROR_LED
-      flashLED(ERROR_LED, 2);
-    #endif
-    correctedTemperature = NAN;
-  }
-
-  return correctedTemperature;
 }
 
 /*************************************************** 
