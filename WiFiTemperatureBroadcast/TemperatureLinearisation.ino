@@ -92,9 +92,7 @@ double lineariseTemperature(double coldJunctionCelsiusTemperatureReading, double
     if (debugLogging && verboseLogging) {
       Serial.println("Temperature is out of range, this should never happen!");
     }
-    #ifdef ERROR_LED
-      flashLED(ERROR_LED, 2);
-    #endif
+    flashLED(errorLed, 2);
     correctedTemperature = NAN;
   }
 

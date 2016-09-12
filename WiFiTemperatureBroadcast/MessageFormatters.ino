@@ -1,11 +1,11 @@
-/* 
- * Functions to create the messages for broadcast to the various hosts.
- * 
- * Only one parameter should be passed in:
- * 
- *  - broadcastTemperatureCelsius, the temperature in celsius
- *  
- */
+/*
+   Functions to create the messages for broadcast to the various hosts.
+
+   Only one parameter should be passed in:
+
+    - broadcastTemperatureCelsius, the temperature in celsius
+
+*/
 
 // Trivial function to format the data to broadcast to listners...
 String formatBroadcastMessage(double broadcastTemperatureCelsius) {
@@ -51,6 +51,10 @@ String formatBroadcastMessage(double broadcastTemperatureCelsius) {
 
 // see https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs
 String formatRoastmasterDatagramProtocolMessage(double broadcastTemperatureCelsius) {
+  if (!gotRDPServer) {
+    return F("");
+  }
+
   DynamicJsonBuffer jsonTemperatureBuffer;
   JsonObject& rdpTemperatureTransmission = jsonTemperatureBuffer.createObject();
   rdpTemperatureTransmission[RDPKey_Version] = RDPValue_Version;
@@ -63,11 +67,7 @@ String formatRoastmasterDatagramProtocolMessage(double broadcastTemperatureCelsi
   rdpReading[RDPKey_Value] = double_with_n_digits(broadcastTemperatureCelsius, 2);
   rdpReading[RDPKey_Meta] = (int)RDPMetaType_BTTemp;
 
-  if (debugLogging) {
-    Serial.print(F("JSON Object: "));
-    rdpTemperatureTransmission.prettyPrintTo(Serial);
-    Serial.println();
-  }
+  if (debugLogging) { Serial.print(F("JSON Object: ")); rdpTemperatureTransmission.prettyPrintTo(Serial); Serial.println(); }
 
   String broadcastData;
   rdpTemperatureTransmission.printTo(broadcastData);

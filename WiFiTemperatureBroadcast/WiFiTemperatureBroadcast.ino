@@ -1,51 +1,51 @@
 /*
- * This is a simple application, firmly inspired by Roasthacker to capture and broadcast  
- * the bean mass temperature from my Gene Café CBR-101 coffee roaster. The ultimate goal
- * is to feed these temperatures into the Roastmaster Data Logger for hands-free temperature
- * capture directly on the iPad...
- * 
- * It has been written and tested on the Adafruit HUZZAH ESP8266 with the Adafruit MAX31855 
- * plus K-Type Thermocouple. It is therefore based on the many, excellent example sketches
- * available within the Arduino IDE and elsewhere...
- * 
- * There are two payloads, both formatted as JSON, one adheres to the Roastmaster Datagram
- * Protocol, the other is my own concoction...
- * 
- * This stuff really is amazing, when I think how big the 300 baud modems I used to provide
- * remote support for customers around the globe, to be able to get this much capability
- * into a matchbox is phenomenal :)
- * 
- * I've decided to adopt the MIT licence for this project, I'd originally included the licence from
- * the starting Adafruit example (serialthermocouple.ino), so that is retained in this source code,
- * however, the text didn't sit right so I've clarified it. None of that alters the fact that 
- * credit must go to the Adafruit team for their efforts and examples.
- * 
- * Danny from Roastmaster provides an example application on his Github page, and as of August 2016
- * his software is still at the pre-release stage so is potentially subject to change. Also note
- * that he is releasing his software under the MIT Licence.
- * 
- * Usage:
- *  - set the probeName, WiFi and UDP broadcast port settings
- *  - ensure a UDP trigger is active, such as HallEffectBroadcast.ino
- *  - ensure the MAX31855 pins are assigned correctly
- *  - tinker with the poll rates, debug/verbose and baud rate values as you prefer
- *  - flash the ESP8266
- *  - monitor your network for UDP datagrams sent to the port specified by udpRemotePort
- *  - and/or consume the datagram in a suitable application
- * 
- * Some links:
- *  - Roastmaster Datagram Protocol: https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs
- *  - Hall Effect based trigger: https://github.com/rswift/wifi-temperature-broadcast/wiki/External-Trigger-(Hall-Effect-Sensor)
- *  
- *  - Roasthacker: http://roasthacker.com/?p=529 & http://roasthacker.com/?p=552
- *  - Adafruit ESP8266: https://www.adafruit.com/products/2471
- *  - Adafruit MAX31855: https://www.adafruit.com/products/269 & https://cdn-shop.adafruit.com/datasheets/MAX31855.pdf
- *  - Using a thermocouple: https://learn.adafruit.com/thermocouple/using-a-thermocouple
- *  - Calibration: https://learn.adafruit.com/calibrating-sensors/maxim-31855-linearization
- *  - TCP dump or Wireshark for packet capture: http://www.tcpdump.org/tcpdump_man.html or https://www.wireshark.org/
- *
- *  Robert Swift - September 2016.
- */
+   This is a simple application, firmly inspired by Roasthacker to capture and broadcast
+   the bean mass temperature from my Gene Café CBR-101 coffee roaster. The ultimate goal
+   is to feed these temperatures into the Roastmaster Data Logger for hands-free temperature
+   capture directly on the iPad...
+
+   It has been written and tested on the Adafruit HUZZAH ESP8266 with the Adafruit MAX31855
+   plus K-Type Thermocouple. It is therefore based on the many, excellent example sketches
+   available within the Arduino IDE and elsewhere...
+
+   There are two payloads, both formatted as JSON, one adheres to the Roastmaster Datagram
+   Protocol, the other is my own concoction...
+
+   This stuff really is amazing, when I think how big the 300 baud modems I used to provide
+   remote support for customers around the globe, to be able to get this much capability
+   into a matchbox is phenomenal :)
+
+   I've decided to adopt the MIT licence for this project, I'd originally included the licence from
+   the starting Adafruit example (serialthermocouple.ino), so that is retained in this source code,
+   however, the text didn't sit right so I've clarified it. None of that alters the fact that
+   credit must go to the Adafruit team for their efforts and examples.
+
+   Danny from Roastmaster provides an example application on his Github page, and as of August 2016
+   his software is still at the pre-release stage so is potentially subject to change. Also note
+   that he is releasing his software under the MIT Licence.
+
+   Usage:
+    - set the probeName, WiFi and UDP broadcast port settings
+    - ensure a UDP trigger is active, such as HallEffectBroadcast.ino
+    - ensure the MAX31855 pins are assigned correctly
+    - tinker with the poll rates, debug/verbose and baud rate values as you prefer
+    - flash the ESP8266
+    - monitor your network for UDP datagrams sent to the port specified by udpRemotePort
+    - and/or consume the datagram in a suitable application
+
+   Some links:
+    - Roastmaster Datagram Protocol: https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs
+    - Hall Effect based trigger: https://github.com/rswift/wifi-temperature-broadcast/wiki/External-Trigger-(Hall-Effect-Sensor)
+
+    - Roasthacker: http://roasthacker.com/?p=529 & http://roasthacker.com/?p=552
+    - Adafruit ESP8266: https://www.adafruit.com/products/2471
+    - Adafruit MAX31855: https://www.adafruit.com/products/269 & https://cdn-shop.adafruit.com/datasheets/MAX31855.pdf
+    - Using a thermocouple: https://learn.adafruit.com/thermocouple/using-a-thermocouple
+    - Calibration: https://learn.adafruit.com/calibrating-sensors/maxim-31855-linearization
+    - TCP dump or Wireshark for packet capture: http://www.tcpdump.org/tcpdump_man.html or https://www.wireshark.org/
+
+    Robert Swift - September 2016.
+*/
 
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -64,10 +64,10 @@ bool verboseLogging = false;
 const unsigned int baudRate = 115200;
 
 // comment out to remove all startup delay, I found it was necessary to let the board get itself together
-#define STARTUP_DELAY 1500
+const int startupDelay = 1500;
 
 // Set the WiFi and network details
-IPAddress localIPAddress, rdpIPAddress, subnetMask, multicastAddress(239,31,8,55), rdpMulticastAddress(224,0,0,1), cncMulticastAddress(239,9,80,1), broadcastAddress;
+IPAddress localIPAddress, rdpIPAddress, subnetMask, multicastAddress(239, 31, 8, 55), rdpMulticastAddress(224, 0, 0, 1), cncMulticastAddress(239, 9, 80, 1), broadcastAddress;
 word udpRemotePort = 31855; // for my own needs
 word rdpRemotePort = 5050;  // for Roastmaster
 word cncPort = 9801;
@@ -83,14 +83,14 @@ struct eeprom_config {
 };
 
 // error and status reporting LED's, comment out to disable the illumination a given LED
-#define STATUS_LED 12  // blue
-#define ERROR_LED 13   // red - unlucky for some...
-#define READING_LED 14 // green
+const int statusLed = 12; // blue
+const int errorLed = 13; // red - unlucky for some...
+const int readingLed = 14; // green
 
 /* Set the various timers and allocate some storage; the goal is to have sufficient to store readings for
- * BROADCAST_RATE_SECONDS seconds, so add a bit just in case the broadcast poll takes longer to trigger than
- * expected, but the logic will roll round anyway to ensure no overrun
- */
+   BROADCAST_RATE_SECONDS seconds, so add a bit just in case the broadcast poll takes longer to trigger than
+   expected, but the logic will roll round anyway to ensure no overrun
+*/
 #define DRUM_ROTATION_SPEED 8  // seconds
 #define PROBE_RATE 0.25        // seconds
 #define ROLLING_AVERAGE_COUNT (int)(((DRUM_ROTATION_SPEED / 2) / PROBE_RATE) * 1.25) // cast to int just in case the division isn't a yummy 0 remainder, and add 25% as a contingency
@@ -105,6 +105,7 @@ double maximumInternal = DBL_MIN;
 #define DO 2  // DO (data out) is an output from the MAX31855 (input to the microcontroller) which carries each bit of data
 #define CS 4  // CS (chip select) is an input to the MAX31855 (output from the microcontroller) and tells the chip when its time to read the thermocouple and output more data
 #define CLK 5 // CLK (clock) is an input to the MAX31855 (output from microcontroller) to indicate when to present another bit of data
+
 Adafruit_MAX31855 thermocouple(CLK, CS, DO);
 
 // initialise the UDP objects (command & control, broadcast and Roastmaster)
@@ -133,9 +134,9 @@ volatile bool haveBroadcastSinceRead = false;
 // set the reference for battery monitoring
 ADC_MODE(ADC_VCC);
 
-/* Taken directly from https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs/blob/master/Roastmaster_RDP_Probe_Host_SBC.ino 
- * and https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs/blob/master/RDP%20Data%20Sheet.pdf
- */
+/* Taken directly from https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs/blob/master/Roastmaster_RDP_Probe_Host_SBC.ino
+   and https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs/blob/master/RDP%20Data%20Sheet.pdf
+*/
 // RDP Keys
 #define RDPKey_Version "RPVersion"
 #define RDPKey_Serial "RPSerial"
@@ -151,47 +152,40 @@ ADC_MODE(ADC_VCC);
 
 // RDP Event Type Integer Constants
 typedef enum {
-    RDPEventType_SYN = 1,
-    RDPEventType_ACK,
-    RDPEventType_Temperature,
-    RDPEventType_Control,
-    RDPEventType_Pressure,
-    RDPEventType_Remote,
+  RDPEventType_SYN = 1,
+  RDPEventType_ACK,
+  RDPEventType_Temperature,
+  RDPEventType_Control,
+  RDPEventType_Pressure,
+  RDPEventType_Remote,
 } RDPEventType;
 
 // RDP Meta Type Integer Constants
 typedef enum {
 
-    //Temperature meta constants
-    //Valid with event type RDPEventType_Temperature
-    RDPMetaType_BTTemp = 1000,
-    RDPMetaType_ETTemp,
-    RDPMetaType_METTemp,
-    RDPMetaType_HeatBoxTemp,
-    RDPMetaType_ExhaustTemp,
-    RDPMetaType_AmbientTemp,
-    RDPMetaType_BTCoolingTemp,
+  //Temperature meta constants
+  //Valid with event type RDPEventType_Temperature
+  RDPMetaType_BTTemp = 1000,
+  RDPMetaType_ETTemp,
+  RDPMetaType_METTemp,
+  RDPMetaType_HeatBoxTemp,
+  RDPMetaType_ExhaustTemp,
+  RDPMetaType_AmbientTemp,
+  RDPMetaType_BTCoolingTemp,
 } RDPMetaType;
 
-/* 
- *  Lots of things happen during the setup, but mainly, WiFi connectivity then handshake with Roastmaster
- */
+/*
+    Lots of things happen during the setup, but mainly, WiFi connectivity then handshake with Roastmaster
+*/
 void setup() {
 
-  #ifdef STARTUP_DELAY
-    delay(STARTUP_DELAY);
-  #endif
+  // give the ESP8266 a moment to calm down...
+  delay(startupDelay);
 
   // endeavour to plop as little code onto the board as possible...
-  #ifdef ERROR_LED
-    pinMode(ERROR_LED, OUTPUT);
-  #endif
-  #ifdef STATUS_LED
-    pinMode(STATUS_LED, OUTPUT);
-  #endif
-  #ifdef READING_LED
-    pinMode(READING_LED, OUTPUT);
-  #endif
+  pinMode(errorLed, OUTPUT);
+  pinMode(statusLed, OUTPUT);
+  pinMode(readingLed, OUTPUT);
 
   // initialise the serial interface and wait for it to be ready...
   Serial.begin(baudRate);
@@ -211,7 +205,7 @@ void setup() {
     Serial.print("EEPROM health comparison : "); Serial.println(eepromComparison, BIN);
     Serial.print("EEPROM config.networkSSID: "); Serial.print(config.networkSSID); Serial.println(F("¶")); // pilcrow to make it clear where the end of the value is...
     Serial.print("EEPROM config.wifiPassword: "); Serial.print(config.wifiPassword); Serial.println(F("¶"));
-}
+  }
 
   if (config.healthBight == eepromComparison) {
     // health check passes, read the whole thing...
@@ -239,9 +233,7 @@ void setup() {
 
   if (debugLogging) {
     Serial.print(F("Attempting to connect to ")); Serial.print(config.networkSSID);
-    if (verboseLogging) {
-      Serial.print(F(" using password ")); Serial.print(config.wifiPassword);
-    }
+    if (verboseLogging) { Serial.print(F(" using password ")); Serial.print(config.wifiPassword); }
   }
 
   // station mode then attempt connections until granted...
@@ -249,10 +241,10 @@ void setup() {
   long connectDelay = 10;
   while (WiFi.status() != WL_CONNECTED) {
     WiFi.begin(config.networkSSID, config.wifiPassword);
-    #ifdef STATUS_LED
-      flashLED(STATUS_LED, 1);
-    #endif
-    if (debugLogging && verboseLogging) { Serial.print(F(".")); Serial.flush(); }
+    flashLED(statusLed, 1);
+    if (debugLogging && verboseLogging) {
+      Serial.print(F(".")); Serial.flush();
+    }
     delay(connectDelay);
     connectDelay += connectDelay;
   }
@@ -307,7 +299,7 @@ void setup() {
         int rdpAckEventType = rdpAckJsonResponse[RDPKey_Payload][0][RDPKey_EventType].as<unsigned int>();
         if (rdpAckEventType == (int)RDPEventType_ACK) {
           gotRDPServer = true;
-          if (debugLogging) { Serial.print(F("Received ACK from Roastmaster, will broadcast to ")); Serial.print(rdpIPAddress); Serial.print(F(":")); Serial.println(rdpRemotePort); }
+          if (debugLogging) { Serial.print(F("Received ACK from Roastmaster, will broadcast to ")); Serial.print(rdpIPAddress);Serial.print(F(":")); Serial.println(rdpRemotePort); }
         } else {
           if (debugLogging) { Serial.print(F("Datagram is valid JSON, but does not match a valid Roastmaster ACK response. Will therefore not broadcast to ")); Serial.println(rdpIPAddress); }
         }
@@ -328,45 +320,27 @@ void setup() {
   // configure the Command & Control UDP listener
   cncUdp.beginMulticast(WiFi.localIP(), cncMulticastAddress, cncPort);
 
-  #ifdef STATUS_LED
-    flashLED(STATUS_LED, 5); // visually indicate end of setup...
-  #endif
-
+  // signal end of startup
+  digitalWrite(errorLed, HIGH);
+  digitalWrite(statusLed, HIGH);
+  delay(357);
+  digitalWrite(statusLed, LOW);
+  flashLED(statusLed, 2);
+  delay(123);
+  digitalWrite(errorLed, LOW);
 }
 
 /*
- *  The main loop is loosely based on the tilt switch hardware interrupt, except this version checks for an incoming UDP packet
- *  as the trigger for the same thing. This will be expanded at some point to allow things like debug/verbose logging to be remotely
- *  activated etc. but the goal is to keep it as slim as possible...
- */
+    The main loop is loosely based on the tilt switch hardware interrupt, except this version checks for an incoming UDP packet
+    as the trigger for the same thing. This will be expanded at some point to allow things like debug/verbose logging to be remotely
+    activated etc. but the goal is to keep it as slim as possible...
+*/
 void loop() {
-  if (debugLogging && verboseLogging) { Serial.print(F("shouldReadProbes is ")); Serial.print(shouldReadProbes); Serial.print(F(", shouldBroadcast is ")); Serial.print(shouldBroadcast); Serial.print(F(" and haveBroadcastSinceRead is ")); Serial.println(haveBroadcastSinceRead); }
+  if (debugLogging) { Serial.print(F("shouldReadProbes is ")); Serial.print(shouldReadProbes); Serial.print(F(", shouldBroadcast is ")); Serial.print(shouldBroadcast); Serial.print(F(" and haveBroadcastSinceRead is ")); Serial.println(haveBroadcastSinceRead); }
 
-  int cncPacketLength = cncUdp.parsePacket();
-  if (cncPacketLength > 0) {
-    // Command & Control packet received
-    char cncPacket[cncPacketLength + 1];
-    memset(cncPacket, 0, cncPacketLength + 1);
-    cncUdp.read(cncPacket, cncPacketLength);
-    if (debugLogging) { Serial.print(cncPacketLength); Serial.print(F(" Command & Control bytes received via ")); Serial.print(cncUdp.destinationIP()); Serial.print(F(": ")); Serial.println(cncPacket); }
+  // check for a command and control message
+  checkForCommandAndControlMessage();
 
-    DynamicJsonBuffer jsonBuffer;
-    JsonObject& cncJson = jsonBuffer.parseObject(cncPacket);
-    String cncCommand = cncJson["command"].as<String>();
-//    String cncContext = cncJson["context"].as<String>();
-    if (cncCommand == "readProbes") { // somewhat clumsy, but it'll do for the time being
-      // switch 'activated', start reading temperatures
-      shouldReadProbes = true;
-      shouldBroadcast = false;
-      haveBroadcastSinceRead = false;
-    } else if (cncCommand == "broadcastReadings") {
-      // switch 'deactivated', so broadcast readings  
-      shouldReadProbes = false;
-      shouldBroadcast = true;
-    }
-    cncUdp.flush();
-  }
-  
   // prioritise broadcast over reading the probes
   if (shouldBroadcast && !haveBroadcastSinceRead) {
     broadcastReadings();
@@ -382,18 +356,18 @@ void loop() {
   delay(50);
 }
 
-/*************************************************** 
+/***************************************************
   This is built on the Adafruit Thermocouple Sensor w/MAX31855K example
 
   Designed specifically to work with the Adafruit Thermocouple Sensor
   ----> https://www.adafruit.com/products/269
 
-  These displays use SPI to communicate, 3 pins are required to  
+  These displays use SPI to communicate, 3 pins are required to
   interface
-  Adafruit invests time and resources providing this open source code, 
-  please support Adafruit and open-source hardware by purchasing 
+  Adafruit invests time and resources providing this open source code,
+  please support Adafruit and open-source hardware by purchasing
   products from Adafruit!
 
-  Written by Limor Fried/Ladyada for Adafruit Industries.  
+  Written by Limor Fried/Ladyada for Adafruit Industries.
   BSD license, all text above must be included in any redistribution
  ****************************************************/

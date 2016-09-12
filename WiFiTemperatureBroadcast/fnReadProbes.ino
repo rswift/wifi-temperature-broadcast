@@ -10,22 +10,16 @@ void readProbes() {
   double temperatureCelsius = thermocouple.readCelsius();
 
   // if the sensor can't be read correctly, wait for a cycle and try again
-  #ifdef ERROR_LED
-    digitalWrite(ERROR_LED, LOW); // turn off the LED
-  #endif
+  digitalWrite(errorLed, LOW); // turn off the LED
   if (isnan(internalTemperature) || isnan(temperatureCelsius)) {
     probeReadingError = true;
     probeReadingErrorCount++;
     if (debugLogging) { Serial.println("Something is wrong with thermocouple! Is it grounded?"); }
-    #ifdef ERROR_LED
-      digitalWrite(ERROR_LED, HIGH); // turn on the error indication LED
-    #endif
+    digitalWrite(errorLed, HIGH); // turn on the error indication LED
     return; 
   } else {
       probeReadingError = false;
-      #ifdef READING_LED
-        flashLED(READING_LED, 1);
-    #endif
+      flashLED(readingLed, 1);
   }
 
   // track minimum and maximum

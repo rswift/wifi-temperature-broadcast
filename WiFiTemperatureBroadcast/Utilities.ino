@@ -3,7 +3,6 @@
  *  
  */
 
-#if defined(ERROR_LED) || defined(STATUS_LED) || defined(READING_LED) // minimise the code where possible
 // does this need to be explained? hopefully not...
 void flashLED(int ledToFlash, int flashCount) {
   do {
@@ -15,4 +14,3 @@ void flashLED(int ledToFlash, int flashCount) {
     digitalWrite(ledToFlash, LOW);
   } while (--flashCount > 0);
 }
-#endif
