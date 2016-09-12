@@ -26,7 +26,7 @@ This stuff really is amazing, when I think how big the 300 baud modems I used to
 - ~~build a small server element into the code to receive instructions (broadcast now, configuration etc.)~~
 - dynamic WiFi settings to permit the client application to govern settings such as SSID & password, poll/broadcast rates etc. and store in EEPROM
 - test on other boards
-- simplify the code, maybe separate out although it is handy having it all in a single file
+- ~~simplify the code, maybe separate out although it is handy having it all in a single file~~
 - ~~add a tilt switch to mean that the temperature readings are taken when the probe is actually in the bean mass, then broadcast afterwards~~
  
 # Some links
