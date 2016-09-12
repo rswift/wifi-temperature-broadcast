@@ -237,16 +237,3 @@ int transmitControlMessage(char* cncMessageToSend) {
   return udp.endPacket();
 }
 
-/*
- * Trivial function to flash the LED
- */
-void flashLED(int ledToFlash, int flashCount) {
-  do {
-    if (flashCount > 0) {
-      delay(77);
-    }
-    digitalWrite(ledToFlash, HIGH);
-    delay(77);
-    digitalWrite(ledToFlash, LOW);
-  } while (--flashCount > 0);
-}
