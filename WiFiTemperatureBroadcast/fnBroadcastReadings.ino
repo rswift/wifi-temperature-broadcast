@@ -79,8 +79,10 @@ void broadcastReadings() {
       }
     } else {
       // it is only an error if gotRDPServer is true
-      if (debugLogging && gotRDPServer) { Serial.print(F("ERROR! RDP UDP broadcast setup failed!")); }
-      flashLED(errorLed, 3);
+      if (debugLogging && gotRDPServer) {
+        Serial.print(F("ERROR! RDP UDP broadcast setup failed!"));
+        flashLED(errorLed, 3);
+      }
     } // end of the RDP broadcast
   
   } else {

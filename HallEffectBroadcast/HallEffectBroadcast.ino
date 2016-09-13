@@ -68,9 +68,9 @@ const byte eepromComparison = B10101010;
 struct eeprom_config {
   byte healthBight = !eepromComparison;
   char networkSSID[WL_SSID_MAX_LENGTH] = "SSID";
-  char wifiPassword[WL_WPA_KEY_MAX_LENGTH] = "password";
-  bool debugEnabled = true;
-  bool verboseEnabled = true;
+  char wifiPassword[WL_WPA_KEY_MAX_LENGTH] = "PASSWORD";
+  bool debugEnabled = false;
+  bool verboseEnabled = false;
 };
 
 // switch related data, force the switch off so no transmission until actually triggered

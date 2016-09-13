@@ -77,8 +77,8 @@ const byte eepromComparison = B10101010;
 struct eeprom_config {
   byte healthBight = !eepromComparison;
   char networkSSID[WL_SSID_MAX_LENGTH] = "SSID";
-  char wifiPassword[WL_WPA_KEY_MAX_LENGTH] = "PASSWORD";
-  bool debugEnabled = true;
+  char wifiPassword[WL_WPA_KEY_MAX_LENGTH] = "password";
+  bool debugEnabled = false;
   bool verboseEnabled = false;
 };
 
@@ -351,9 +351,6 @@ void loop() {
   if (shouldReadProbes) {
     readProbes();
   }
-
-  // timer handling states that yield() or a delay() should be called, no point in hammering the CPU so we'll delay a bit
-  delay(50);
 }
 
 /***************************************************
