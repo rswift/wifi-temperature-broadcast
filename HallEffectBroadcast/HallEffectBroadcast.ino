@@ -19,31 +19,38 @@
  *
  *  One day Roastmaster may be able to allow me to broadcast ambient temperature and
  *  humidity values directly to it, hence adding in the sensor here while I was wiring
- *  up the 
+ *  up the board. I've now added an I2C OLED display that provides onboard and probe status
+ *  information (temperature + battery), the display is the split yellow/blue one 
  *  
  *  ToDo:
- *   - add ambient temperature & humidity from Adafruit SHT31 broadcaster (currently reading only)
  *   - consider 'manual override' switch to allow me to force probe broadcasting at will
- *   - broadcast Vcc via ADC_MODE(ADC_VCC) and ESP.getVcc()
  *  
  *  Links:
  *   - Hall Effect Sensor: http://uk.rs-online.com/web/p/hall-effect-sensors/8223775/
  *   - Adafruit SHT31: https://learn.adafruit.com/adafruit-sht31-d-temperature-and-humidity-sensor-breakout/wiring-and-test
  *   - Wiki page with hardware: https://github.com/rswift/wifi-temperature-broadcast/wiki/External-Trigger-(Hall-Effect-Sensor)
+ *   - I2C OLED display: https://www.amazon.co.uk/gp/product/B0156CO5IE/
+ *   - Adafruit GFX library: https://learn.adafruit.com/adafruit-gfx-graphics-library/graphics-primitives
+ *   - ArduinoJSON: https://github.com/bblanchon/ArduinoJson
  *  
  *  Robert Swift - September 2016
  */
 
+#include <Arduino.h>
 #include <EEPROM.h>
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiUdp.h>
 #include <Wire.h>
-#include "Adafruit_SHT31.h"
+#include <Adafruit_SHT31.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <ArduinoJson.h>
 
-// disabled by default, but can be overridden via EEPROM and in the future, via the web server...
+// logging disabled by default, but can be overridden via EEPROM and in the future, via the web server...
 bool debugLogging = false;
 bool verboseLogging = false;
+bool ledEnabled = true;
 
 // put this up near the top, to make it easy to spot for those not using the same baud rate as me for their FTDI Friend...
 const unsigned int baudRate = 115200;
@@ -52,11 +59,13 @@ const unsigned int baudRate = 115200;
 const int startupDelay = 1500; //ms
 
 // Set the WiFi and network details
-IPAddress localIPAddress, subnetMask, multicastAddress(239,9,80,1);
-word udpRemotePort = 9801; // for my own needs
+IPAddress localIPAddress, subnetMask, multicastBroadcastAddress(239,9,80,1), multicastListenerAddress(239, 31, 8, 55);
+word udpListenerPort = 31855; // for my own needs
+word udpBroadcastPort = 9801; // for my own needs
 
-// initialise the UDP objects, one for command & control, the other for Roastmaster
-WiFiUDP udp;
+// initialise the UDP objects, one for command & control, the other for my broadcaster
+WiFiUDP probeUdp;
+WiFiUDP cncUdp;
 
 // control protocol is very simple; will almost certainly expand at some point as i want to be able to control the main broadcast unit
 char cncReadBeanMassProbe[] = "{\"command\":\"readProbes\",\"context\":\"Bean Mass\"}";
@@ -68,9 +77,10 @@ const byte eepromComparison = B10101010;
 struct eeprom_config {
   byte healthBight = !eepromComparison;
   char networkSSID[WL_SSID_MAX_LENGTH] = "SSID";
-  char wifiPassword[WL_WPA_KEY_MAX_LENGTH] = "PASSWORD";
+  char wifiPassword[WL_WPA_KEY_MAX_LENGTH] = "password";
   bool debugEnabled = false;
   bool verboseEnabled = false;
+  bool ledEnabled = false;
 };
 
 // switch related data, force the switch off so no transmission until actually triggered
@@ -84,14 +94,36 @@ const int redLed = 12;
 // Temperature & Humidity sensor
 Adafruit_SHT31 sht31 = Adafruit_SHT31();
 bool shtSensorAvailable = false;
+float temperature;
+float humidity;
 
-// set the reference for battery monitoring TODO - something with this!?
+// Trigger status data
+const byte batteryStartX = 99, triggerBatteryY = 2, probeBatteryY = 18;
+byte updateTriggerBattery = 10;
+
+#define OLED_RESET 15 // not used by my board, so set to an unused GPIO pin...
+Adafruit_SSD1306 display(OLED_RESET);
+#if (SSD1306_LCDHEIGHT != 64)
+#error("Height incorrect, please fix Adafruit_SSD1306.h!");
+#endif
+
+// set the reference for battery monitoring
 ADC_MODE(ADC_VCC);
 
 void setup() {
 
   // seems to be needed to let things stabilise?
   delay(startupDelay);
+
+  Wire.pins(4, 5); Wire.begin();
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3D (for the 128x64)
+  display.clearDisplay();
+  display.display(); delay(1);
+  display.setTextSize(1); display.cp437(); display.setTextColor(WHITE, BLACK);
+
+  initaliseTriggerDisplay();
+  setTriggerStatusText("Initialising", false);
+  display.display(); delay(5);
 
   // initialise the serial interface and wait for it to be ready...
   Serial.begin(baudRate);
@@ -131,6 +163,7 @@ void setup() {
   // transfer logging settings
   debugLogging = config.debugEnabled;
   verboseLogging = config.verboseEnabled;
+  ledEnabled = config.ledEnabled;
 
   Serial.println(); Serial.printf("In setup, %sdebugging is%senabled\n", ((verboseLogging) ? "verbose " : ""), ((debugLogging) ? " " : " not "));
 
@@ -150,13 +183,15 @@ void setup() {
     WiFi.begin(config.networkSSID, config.wifiPassword);
     flashLED(blueLed, 1);
     if (debugLogging && verboseLogging) { Serial.print(F(".")); Serial.flush(); }
+    setTriggerStatusText("WiFi Delay!", false);
     delay(connectDelay);
     connectDelay += connectDelay;
   }
 
+  setTriggerStatusText("WiFi Connected", false);
   localIPAddress = WiFi.localIP();
   subnetMask = WiFi.subnetMask();
-  if (debugLogging) { Serial.print(F(" connected with IP address ")); Serial.print(localIPAddress); Serial.print(F(" netmask ")); Serial.print(subnetMask); Serial.print(F(" using broadcast address ")); Serial.println(multicastAddress); WiFi.printDiag(Serial); }
+  if (debugLogging) { Serial.print(F(" connected with IP address ")); Serial.print(localIPAddress); Serial.print(F(" netmask ")); Serial.print(subnetMask); Serial.print(F(" using broadcast address ")); Serial.println(multicastBroadcastAddress); WiFi.printDiag(Serial); }
 
   // setup the Humidity & Temperature sensor
   if (!sht31.begin(0x44)) {
@@ -167,11 +202,15 @@ void setup() {
     shtSensorAvailable = true;
   }
 
+  // configure the Command & Control UDP listener
+  probeUdp.beginMulticast(WiFi.localIP(), multicastListenerAddress, udpListenerPort);
+
   // configure the switch
   attachInterrupt(digitalPinToInterrupt(switchPin), switchStateChangeHigh, RISING);
   pinMode(switchPin, INPUT_PULLUP);
 
   // signal end of startup
+  setTriggerStatusText("Ready", true);
   digitalWrite(redLed, HIGH);
   digitalWrite(blueLed, HIGH);
   delay(357);
@@ -179,6 +218,9 @@ void setup() {
   flashLED(blueLed, 2);
   delay(123);
   digitalWrite(redLed, LOW);
+
+  // only draw the probe lines after we're ready to go...
+  initaliseProbeDisplay();
 }
 
 void loop() {
@@ -186,17 +228,21 @@ void loop() {
   if (switchState == HIGH) {
     if (debugLogging) { Serial.print(F("Switch HIGH, transmitting readBeanMassProbe message: ")); }
     transmissionStatus = transmitControlMessage(cncReadBeanMassProbe);
+    setTriggerStatusText("Read...", true);
     flashLED(redLed, 1);
   } else {
     if (debugLogging) { Serial.print(F("Switch LOW, transmitting broadcastReadings message: ")); }
     transmissionStatus = transmitControlMessage(cncBroadcastBeanMassReadings);
+    setTriggerStatusText("Transmit", true);
     flashLED(blueLed, 1);
   }
 
   if (transmissionStatus == 1) {
     if (debugLogging) { Serial.println(F("success")); }
+    setTriggerStatusText("OK", true);
   } else {
     if (debugLogging) { Serial.println(F("failed!")); }
+    setTriggerStatusText("ERROR!", true);
     digitalWrite(redLed, HIGH);
     flashLED(blueLed, 5);
     digitalWrite(redLed, LOW);
@@ -204,21 +250,20 @@ void loop() {
 
   // do a quick reading
   if (shtSensorAvailable) {
-    float temperature = sht31.readTemperature();
-    float humidity = sht31.readHumidity();
+    temperature = sht31.readTemperature();
+    humidity = sht31.readHumidity();
     if (debugLogging) { Serial.print(F("Temperature: ")); Serial.print(temperature); Serial.print(F("°C Relative humidity: ")); Serial.print(humidity); Serial.println(F("%")); }
-    // TODO: broadcast this value?
   }
 
-  // probably pointless...
-  delay(100);
+  // update the display, the top line (rows 0-15) are the trigger (just the trigger battery, every 10 iterations), rows 16-63 give probe details
+  if (--updateTriggerBattery == 0) {
+    drawTriggerBattery();
+    updateTriggerBattery = 9;
+  }
+  updateProbeStatus();
 }
 
-/*
- * Interrupt on change, so set the status to HIGH or LOW, keeps it quick
- * 
- * Any debouncing to be done with hardware: http://coder-tronics.com/switch-debouncing-tutorial-pt1/
- */
+// Interrupt on change, so set the status to HIGH or LOW, keeps it quick
 void switchStateChangeHigh() {
   switchState = HIGH;
   attachInterrupt(digitalPinToInterrupt(switchPin), switchStateChangeLow, FALLING);
@@ -228,12 +273,9 @@ void switchStateChangeLow() {
   attachInterrupt(digitalPinToInterrupt(switchPin), switchStateChangeHigh, RISING);
 }
 
-/*
- * Trivial function to transmit the control message
- */
+// Trivial function to transmit the control message
 int transmitControlMessage(char* cncMessageToSend) {
-  udp.beginPacketMulticast(multicastAddress, udpRemotePort, WiFi.localIP());
-  udp.write(cncMessageToSend);
-  return udp.endPacket();
+  cncUdp.beginPacketMulticast(multicastBroadcastAddress, udpBroadcastPort, WiFi.localIP());
+  cncUdp.write(cncMessageToSend);
+  return cncUdp.endPacket();
 }
-
