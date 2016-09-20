@@ -56,7 +56,7 @@
 #include "Adafruit_MAX31855.h"
 #include <ArduinoJson.h>
 
-// disabled by default, but can be overridden via EEPROM and in the future, via the web server...
+// logging disabled by default, but can be overridden via EEPROM and in the future, via the web server...
 bool debugLogging = false;
 bool verboseLogging = false;
 
@@ -92,7 +92,7 @@ const int readingLed = 14; // green
    expected, but the logic will roll round anyway to ensure no overrun
 */
 #define DRUM_ROTATION_SPEED 8  // seconds
-#define PROBE_RATE 0.25        // seconds
+#define PROBE_RATE 0.125       // seconds
 #define ROLLING_AVERAGE_COUNT (int)(((DRUM_ROTATION_SPEED / 2) / PROBE_RATE) * 1.25) // cast to int just in case the division isn't a yummy 0 remainder, and add 25% as a contingency
 
 double celsiusRollingAverage[ROLLING_AVERAGE_COUNT] = {};
@@ -182,7 +182,6 @@ void setup() {
   // give the ESP8266 a moment to calm down...
   delay(startupDelay);
 
-  // endeavour to plop as little code onto the board as possible...
   pinMode(errorLed, OUTPUT);
   pinMode(statusLed, OUTPUT);
   pinMode(readingLed, OUTPUT);
