@@ -23,7 +23,7 @@ String formatBroadcastMessage(double broadcastTemperatureCelsius) {
   reading["probeSubType"] = temperatureProbeType;
 
   JsonObject& systemInformation = jsonResponse.createNestedObject("systemInformation");
-  systemInformation["VCC"] = double_with_n_digits((ESP.getVcc() / 1024.0), 3);
+  systemInformation["VCC"] = double_with_n_digits((ESP.getVcc() / 966.8), 3); // the division value was calculated from repeated ESP.getVcc() values divided by the measured voltage
 
   if (debugLogging) {
     JsonObject& debugData = jsonResponse.createNestedObject("debugData");
