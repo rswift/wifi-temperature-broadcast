@@ -19,11 +19,13 @@ void checkForCommandAndControlMessage() {
     //    String cncContext = cncJson["context"].as<String>();
     if (cncCommand == "readProbes") { // somewhat clumsy, but it'll do for the time being
       // switch 'activated', start reading temperatures
+      digitalWrite(readingLed, HIGH);
       shouldReadProbes = true;
       shouldBroadcast = false;
       haveBroadcastSinceRead = false;
     } else if (cncCommand == "broadcastReadings") {
       // switch 'deactivated', so broadcast readings
+      digitalWrite(readingLed, LOW);
       shouldReadProbes = false;
       shouldBroadcast = true;
     }

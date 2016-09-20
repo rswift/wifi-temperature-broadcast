@@ -19,7 +19,7 @@ void readProbes() {
     return; 
   } else {
       probeReadingError = false;
-      flashLED(readingLed, 1);
+/*      flashLED(readingLed, 1); */
   }
 
   // track minimum and maximum
