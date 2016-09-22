@@ -48,4 +48,7 @@ This stuff really is amazing, when I think how big the 300 baud modems I used to
 
 **Gene Café CBR-101**: http://genecafe.com/pud/index.php?group_code=pud&category_id=120&p_cate_id=118&m_id=64
 
+# The setup...
+![Off-Axis Drum plus Hardware](https://github.com/rswift/wifi-temperature-broadcast/blob/master/Resources/Off-Axis-Drum-and-Hardware.jpg)
+
 Robert Swift - September 2016.
