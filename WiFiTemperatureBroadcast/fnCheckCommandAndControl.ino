@@ -23,6 +23,7 @@ void checkForCommandAndControlMessage() {
       shouldReadProbes = true;
       shouldBroadcast = false;
       haveBroadcastSinceRead = false;
+      rdpPreBroadcast = false;
     } else if (cncCommand == "broadcastReadings") {
       // switch 'deactivated', so broadcast readings
       digitalWrite(readingLed, LOW);
