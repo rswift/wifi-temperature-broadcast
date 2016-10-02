@@ -134,6 +134,12 @@ volatile bool haveBroadcastSinceRead = false;
 // set the reference for battery monitoring
 ADC_MODE(ADC_VCC);
 
+/*
+ * as of v10.0.0BETA, RDP requires the probe to be broadcasting before it'll start a roast so this is a
+ * gash variable to inform the sketch to broadcast a reading as soon as the sketch starts up...
+ */
+boolean rdpPreBroadcast = true;
+
 /* Taken directly from https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs/blob/master/Roastmaster_RDP_Probe_Host_SBC.ino
    and https://github.com/rainfroginc/Roastmaster_RDP_Probe_Host_For_SBCs/blob/master/RDP%20Data%20Sheet.pdf
 */
@@ -339,6 +345,12 @@ void loop() {
 
   // check for a command and control message
   checkForCommandAndControlMessage();
+
+  if (gotRDPServer && rdpPreBroadcast) {
+    // before the roast starts on the roaster, just transmit one-shot readings to keep RM happy and permit the roast to start in the app
+    readProbes();
+    broadcastReadings();
+  }
 
   // prioritise broadcast over reading the probes
   if (shouldBroadcast && !haveBroadcastSinceRead) {
