@@ -5,13 +5,15 @@
  */
 
 void readProbes() {
-  
-  double internalTemperature = thermocouple.readInternal();
-  double temperatureCelsius = thermocouple.readCelsius();
+
+//  max31855readings readings = thermocouple.readTemperatures();
+  max31855readings readings;
+  readings.internal = thermocouple.readInternal();
+  readings.celsius = thermocouple.readCelsius();
 
   // if the sensor can't be read correctly, wait for a cycle and try again
   digitalWrite(errorLed, LOW); // turn off the LED
-  if (isnan(internalTemperature) || isnan(temperatureCelsius)) {
+  if (isnan(readings.internal) || isnan(readings.celsius)) {
     probeReadingError = true;
     probeReadingErrorCount++;
     if (debugLogging) { Serial.println("Something is wrong with thermocouple! Is it grounded?"); }
@@ -23,14 +25,14 @@ void readProbes() {
   }
 
   // track minimum and maximum
-  if (internalTemperature < minimumInternal) {
-    minimumInternal = internalTemperature;
+  if (readings.internal < minimumInternal) {
+    minimumInternal = readings.internal;
   }
-  if (internalTemperature > maximumInternal) {
-    maximumInternal = internalTemperature;
+  if (readings.internal > maximumInternal) {
+    maximumInternal = readings.internal;
   }
 
-  if (debugLogging) { Serial.print(F("Internal temperature is ")); Serial.print(internalTemperature); Serial.print(F("°C and the probe is reading (linearised) ")); Serial.print(temperatureCelsius); Serial.print(F("°C (")); Serial.print(lineariseTemperature(internalTemperature, temperatureCelsius)); Serial.print(F("°C) and readError is: ")); Serial.println(thermocouple.readError()); }
+  if (debugLogging) { Serial.print(F("Internal temperature is ")); Serial.print(readings.internal); Serial.print(F("°C and the probe is reading (linearised) ")); Serial.print(readings.celsius); Serial.print(F("°C (")); Serial.print(lineariseTemperature(readings.internal, readings.celsius)); Serial.println(F("°C)")); }
 
   // some basic protection logic just in case the broadcast hasn't happened in a timely manner...
   if (rollingAveragePosition >= ROLLING_AVERAGE_COUNT) {
@@ -40,7 +42,9 @@ void readProbes() {
   }
 
   // write the temperature data values to the rolling average array
-  celsiusRollingAverage[rollingAveragePosition] = lineariseTemperature(internalTemperature, temperatureCelsius);
+  long microsPreLinearise = micros();
+  celsiusRollingAverage[rollingAveragePosition] = lineariseTemperature(readings.internal, readings.celsius);
+  long microsPostLinearise = micros();
 
   if (debugLogging && verboseLogging) { Serial.print("Setting celsiusRollingAverage["); Serial.print(rollingAveragePosition); Serial.print("]="); Serial.println(celsiusRollingAverage[rollingAveragePosition]); }
 

@@ -70,10 +70,10 @@ void updateOnboardSensorStatus() {
   if (shtSensorAvailable) {
     char text[display.width()/5];
     char floater[4+1];
-    dtostrf(temperature, 4, 1, floater);
+    dtostrf(sensorReadings.temperature, 4, 1, floater);
     sprintf(text, "Ambient: %s%cC", floater, degree);
     setProbeMessageText(1, text);
-    dtostrf(humidity, 4, 1, floater);
+    dtostrf(sensorReadings.humidity, 4, 1, floater);
     sprintf(text, "Rel. Humidity: %s%%", floater);
     setProbeMessageText(2, text);
   }

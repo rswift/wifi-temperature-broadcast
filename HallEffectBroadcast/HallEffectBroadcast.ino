@@ -22,6 +22,15 @@
  *  up the board. I've now added an I2C OLED display that provides onboard and probe status
  *  information (temperature + battery), the display is the split yellow/blue one 
  *  
+ *  Important note: This code has been optimised based on changes to the Adafruit_SHT31
+ *  library, specifically the creation of a dual sensor read function (because reading the
+ *  physical sensor returns both temperature and humidity, therefore calling each function
+ *  just takes twice as long) but mainly the replacement of a 500ms delay with a 17ms delay
+ *  based on the information in the datasheet... The performance improvement is tremendous
+ *  with the display updating in what I'd deem to be 'real time' given the nature of the
+ *  microprocessor, display etc.
+ *  Refer to https://github.com/rswift/Adafruit_SHT31/tree/optimisation for details...
+ *  
  *  ToDo:
  *   - consider 'manual override' switch to allow me to force probe broadcasting at will
  *  
@@ -33,7 +42,7 @@
  *   - Adafruit GFX library: https://learn.adafruit.com/adafruit-gfx-graphics-library/graphics-primitives
  *   - ArduinoJSON: https://github.com/bblanchon/ArduinoJson
  *  
- *  Robert Swift - September 2016
+ *  Robert Swift - October 2016
  */
 
 #include <Arduino.h>
@@ -50,7 +59,7 @@
 // logging disabled by default, but can be overridden via EEPROM and in the future, via the web server...
 bool debugLogging = false;
 bool verboseLogging = false;
-bool ledEnabled = true;
+bool ledEnabled = false;
 
 // put this up near the top, to make it easy to spot for those not using the same baud rate as me for their FTDI Friend...
 const unsigned int baudRate = 115200;
@@ -94,8 +103,7 @@ const int redLed = 12;
 // Temperature & Humidity sensor
 Adafruit_SHT31 sht31 = Adafruit_SHT31();
 bool shtSensorAvailable = false;
-float temperature;
-float humidity;
+sht31readings sensorReadings;
 
 // Trigger status data
 const byte batteryStartX = 99, triggerBatteryY = 2, probeBatteryY = 18;
@@ -250,9 +258,10 @@ void loop() {
 
   // do a quick reading
   if (shtSensorAvailable) {
-    temperature = sht31.readTemperature();
-    humidity = sht31.readHumidity();
-    if (debugLogging) { Serial.print(F("Temperature: ")); Serial.print(temperature); Serial.print(F("°C Relative humidity: ")); Serial.print(humidity); Serial.println(F("%")); }
+    sensorReadings = sht31.readSensors();
+//    temperature = sht31.readTemperature();
+//    humidity = sht31.readHumidity();
+    if (debugLogging) { Serial.print(F("Temperature: ")); Serial.print(sensorReadings.temperature); Serial.print(F("°C Relative humidity: ")); Serial.print(sensorReadings.humidity); Serial.println(F("%")); }
   }
 
   // update the display, the top line (rows 0-15) are the trigger (just the trigger battery, every 10 iterations), rows 16-63 give probe details

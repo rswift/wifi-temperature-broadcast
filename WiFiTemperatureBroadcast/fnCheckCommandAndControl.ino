@@ -3,11 +3,10 @@
  * file WiFiTemperatureBroadcast.ino
  * 
  */
-
 void checkForCommandAndControlMessage() {
   int cncPacketLength = cncUdp.parsePacket();
   if (cncPacketLength > 0) {
-    // Command & Control packet received
+    // UDP Command & Control packet received
     char cncPacket[cncPacketLength + 1];
     memset(cncPacket, 0, cncPacketLength + 1);
     cncUdp.read(cncPacket, cncPacketLength);

@@ -24,6 +24,15 @@
    his software is still at the pre-release stage so is potentially subject to change. Also note
    that he is releasing his software under the MIT Licence.
 
+   Important note: This code has been optimised based on changes to the Adafruit_MAX31855
+   library, specifically the creation of a dual junction read function (because reading the
+   physical sensor returns both hot and cold junction temperatures, therefore calling each
+   function takes twice as long) but mainly the removal of a 1 millisecond delay in the software
+   SPI reading library code, this was based on the pull request from Matthijs Kooijman where he'd
+   observed that the MAX31855 datasheet specifies a delay in nanoseconds (0.1 millisecond to be
+   exact). This has yielded a 17x performance improvement!
+   Refer to https://github.com/rswift/Adafruit-MAX31855-library/tree/optimisation for details...
+
    Usage:
     - set the probeName, WiFi and UDP broadcast port settings
     - ensure a UDP trigger is active, such as HallEffectBroadcast.ino
@@ -44,7 +53,7 @@
     - Calibration: https://learn.adafruit.com/calibrating-sensors/maxim-31855-linearization
     - TCP dump or Wireshark for packet capture: http://www.tcpdump.org/tcpdump_man.html or https://www.wireshark.org/
 
-    Robert Swift - September 2016.
+    Robert Swift - October 2016.
 */
 
 #include <Arduino.h>
